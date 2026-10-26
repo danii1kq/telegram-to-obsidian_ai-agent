@@ -10,8 +10,9 @@ simple, so that everybody can follow them.
   answers of the bot. The formatter does not change them, the tests check
   them.
 - **English first.** The code, the commits and the documentation are in
-  English. The README has a Russian version, the messages of the bot are in
-  Russian, because the bot writes the notes of its owner.
+  English. The notes of the owner are in his language, the bot speaks two
+  languages, and [README-ru.md](README-ru.md) is the Russian version of the
+  README.
 - **TypeScript, no `any`.** The types are checked with `npm run typecheck`.
 - **Biome formats the code.** `npm run lint:fix` before every commit.
 

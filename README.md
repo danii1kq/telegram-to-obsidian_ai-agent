@@ -1,5 +1,7 @@
 # Telegram to Obsidian AI Agent
 
+**English** | [Русский](README-ru.md)
+
 A private Telegram bot that turns short thoughts into notes of an Obsidian
 vault. The bot is the front end, [Hermes Agent](https://hermes-agent.nousresearch.com)
 is the brain, and the vault is the memory. The vault is synchronised between
@@ -10,13 +12,7 @@ The bot also keeps a small web app inside Telegram, so the notes can be read
 from the phone without opening Obsidian, and it writes a summary of every day
 into the file of the month.
 
-**English** | [Русский](#русский)
-
----
-
-## English
-
-### What it does
+## What it does
 
 - You send a text message to the bot in Telegram.
 - The bot passes it to Hermes Agent, which works with the vault through a set
@@ -41,7 +37,7 @@ into the file of the month.
 Only the owner of the bot is allowed to use it: every message from another
 user id is dropped without an answer.
 
-### Commands
+## Commands
 
 | Command | What it does |
 | --- | --- |
@@ -63,7 +59,7 @@ of the user too.
 Tags are written in the message itself: `#idea #work` end up in the
 `tags` field of the frontmatter of the note, next to `inbox` and `telegram`.
 
-### The daily summary
+## The daily summary
 
 At midnight, in the time zone of the owner, the agent looks at the notes of
 the day that is over and writes a summary of it into the file of the month,
@@ -93,7 +89,7 @@ summary lives in the file of the month and in the Mini App, where it is shown
 at the top of the list of the notes. When the bot was down at midnight, the
 missing summaries are made after the restart.
 
-### How the notes stay safe
+## How the notes stay safe
 
 The vault is synchronised by Syncthing while the agent writes into it, so a
 blind write could destroy a note. Every write therefore goes through the vault
@@ -114,7 +110,7 @@ call of the agent cannot write outside of it. The agent of the daily summary
 gets the same tools, but every write it does is taken back: only the file of
 the month is changed by the summary.
 
-### Stack
+## Stack
 
 | Part | Technology |
 | --- | --- |
@@ -129,7 +125,7 @@ the month is changed by the summary.
 | The Mini App | React and Vite, served by the bot |
 | Tests | Vitest, Biome, husky + lint-staged, GitHub Actions |
 
-### Installation on a server
+## Installation on a server
 
 Requirements: a Linux server with Docker and Docker Compose.
 
@@ -188,7 +184,7 @@ The image is in the registry as well, so a deployment can skip the build:
 docker pull ghcr.io/danii1kq/telegram-to-obsidian_ai-agent:latest
 ```
 
-### The Mini App
+## The Mini App
 
 The notes are also a small web app inside Telegram. The button in the menu of
 the chat opens it: the list of the notes, the search and the reading of a note
@@ -217,7 +213,7 @@ bash deploy/tunnel.sh --install
 The same tunnel can carry the webhook of the bot: set `TELEGRAM_MODE=webhook`
 and `TELEGRAM_WEBHOOK_URL=https://<the address of the tunnel>/webhook`.
 
-### The vault MCP server as a package
+## The vault MCP server as a package
 
 The tools of the vault work with any MCP client, not only with the bot. They
 are published as a separate package:
@@ -229,7 +225,7 @@ OBSIDIAN_VAULT_PATH=/path/to/vault vault-mcp
 
 The description of the package is in [packages/vault-mcp](packages/vault-mcp).
 
-### Syncthing and your laptop
+## Syncthing and your laptop
 
 1. The web interface of Syncthing is on the port 8384 of the server. It is
    not open to the internet, the owner reaches it through a tunnel:
@@ -252,7 +248,7 @@ The description of the package is in [packages/vault-mcp](packages/vault-mcp).
 After that the notes appear on the laptop within seconds, and the bot keeps
 working on the server.
 
-### Updates
+## Updates
 
 ```bash
 git pull
@@ -262,7 +258,7 @@ docker compose up -d --build
 The script `deploy/deploy.sh` does exactly that, and it rolls back to the
 previous image when the new container does not become healthy.
 
-### Local development
+## Local development
 
 ```bash
 npm install
@@ -294,7 +290,7 @@ smoke test of a deployment runs the whole pipeline without Telegram:
 node dist/selftest.js "an idea for a business"
 ```
 
-### The project
+## The project
 
 - [CONTRIBUTING.md](CONTRIBUTING.md) - how to work with the project, the rules
   of the code and the commits.
@@ -304,7 +300,7 @@ node dist/selftest.js "an idea for a business"
 - The releases are made with a tag: the workflow builds the image, puts it in
   the registry of GitHub and publishes the notes of the release.
 
-### Security
+## Security
 
 - The bot answers only the ids from `ALLOWED_TELEGRAM_ID`.
 - The keys live in `deploy/.env` on the server, the file is not in git.
@@ -317,303 +313,8 @@ node dist/selftest.js "an idea for a business"
 - The files of the owner are stored in the vault, the bot never sends them
   anywhere.
 
----
-
-## Русский
-
-### Что это делает
-
-- Ты пишешь боту текст в Telegram.
-- Бот передаёт его Hermes Agent, который работает с хранилищем через MCP-инструменты:
-  - ищет заметку по той же теме,
-  - дописывает мысль в конец этой заметки или создаёт новую,
-  - новая заметка всегда начинается с фронтматтера Obsidian
-    (`date` и `tags: [inbox, telegram]`),
-  - названия уже существующих заметок превращаются в `[[вики-ссылки]]`.
-- Если в сообщении нужны факты (незнакомый термин, цены, новости, вопрос),
-  агент сначала ищет в интернете через MCP-сервер DuckDuckGo и записывает
-  найденное в заметку вместе со ссылкой на источник.
-- Бот отвечает одной короткой строкой: `Создал заметку «Идеи для бизнеса»`.
-- Файл, который пришёл вместе с сообщением (фото, документ, видео, голосовое),
-  сохраняется в папку `attachments` хранилища и вставляется в заметку как
-  `![[2026-10-22_photo_abc.jpg]]`.
-- В полночь агент пишет итог за день в файл месяца, а в чат приходит короткое
-  уведомление со ссылкой на мини-приложение.
-- Заметки доступны как маленькое веб-приложение внутри Telegram: кнопка в
-  меню чата открывает список заметок, поиск и чтение заметки.
-
-Бот работает только для владельца: сообщения с чужих id молча игнорируются.
-
-### Команды
-
-| Команда | Что делает |
-| --- | --- |
-| `/start`, `/help` | короткое описание бота |
-| `/status` | последние записанные заметки |
-| `/search кофе` | ищет по названию заметки и по тексту внутри заметок |
-| `/inbox` | показывает заметки с тегом `inbox` |
-| `/undo` | отменяет последнюю запись бота: дописанный блок убирается, перезаписанная заметка получает прежнее содержимое, созданная заметка удаляется |
-| `/undo confirm` | удаляет созданную заметку, которую меняли после записи бота |
-| `/summary` | делает итог за вчера прямо сейчас |
-| `/summary 2026-10-20` | делает итог за этот день |
-| `/language` | показывает два языка бота |
-| `/language ru` | переключает бота на русский, `/language en` на английский |
-
-Язык бота хранится в базе для каждого пользователя. Новый пользователь
-получает английский, владелец бота - русский. Мини-приложение работает на
-языке пользователя.
-
-Теги пиши прямо в сообщении: `#идея #работа` попадут в поле `tags`
-фронтматтера заметки рядом с `inbox` и `telegram`.
-
-### Итоги дня
-
-В полночь по часовому поясу владельца агент смотрит на заметки прошедшего дня
-и записывает итог в файл месяца, например `october_2026.md`:
-
-```markdown
----
-date: 2026-10-01
-tags: [journal, daily]
----
-
-# Октябрь 2026
-
-## 2026-10-21
-
-Заметка «Идеи для бизнеса»: мысль о кофе на районе.
-Заметка «Дневник»: запись о прогулке и о книге.
-```
-
-Итог перечисляет по заметкам, что именно было записано за день, и пишется на
-языке владельца: русскоязычный пользователь получает русский текст,
-англоязычный - английский. Каждый день - отдельный раздел, дня без заметок в
-файле просто нет.
-
-В чат приходит только короткое уведомление с кнопкой для перехода в
-мини-приложение, а сам итог хранится в файле месяца и в мини-приложении, где
-он показан сверху списка заметок. Если бот был выключен в полночь,
-недостающие итоги создаются после запуска.
-
-### Почему заметки не теряются
-
-Хранилище синхронизируется Syncthing, пока агент в него пишет, поэтому любая
-запись идёт через защиту:
-
-- содержимое пишется во временный файл и переименовывается поверх цели,
-  поэтому читатель никогда не увидит наполовину записанную заметку;
-- если файл только что менялся (это видно через fs.watch), запись ждёт секунду;
-- если файл заблокирован, запись повторяется каждые 500 мс;
-- после записи файл перечитывается: если его успел изменить синхронизатор,
-  запись повторяется, а при добавлении текста старое содержимое не теряется;
-- конфликтные копии Syncthing (`*.sync-conflict-*`) показываются в отчёте.
-
-Пути инструментов разрешаются относительно корня хранилища, поэтому агент не
-может записать за его пределы. У агента ночного итога те же инструменты, но
-все его записи откатываются: итог меняет только файл месяца.
-
-### Стек
-
-| Часть | Технология |
-| --- | --- |
-| Бот | [grammY](https://grammy.dev), TypeScript, long polling или webhook |
-| Агент | Hermes Agent (ставится в образ), одноразовый запуск |
-| Инструменты хранилища | MCP-сервер на Node, безопасная запись |
-| MCP-сервер хранилища отдельным пакетом | [`@danii1kq/vault-mcp`](packages/vault-mcp), работает с любым MCP-клиентом |
-| Поиск в интернете | DuckDuckGo MCP-сервер (`uvx duckduckgo-mcp-server`) |
-| Модель | OpenCode Go через локальный прокси |
-| База | SQLite (libSQL + Drizzle ORM), журнал заметок |
-| Синхронизация | Syncthing (образ linuxserver) |
-| Мини-приложение | React и Vite, раздаётся ботом |
-| Тесты | Vitest, Biome, husky + lint-staged, GitHub Actions |
-
-### Установка на сервер
-
-Нужен Linux-сервер с Docker и Docker Compose.
-
-1. Клонируем репозиторий и переходим в папку `deploy`:
-
-   ```bash
-   git clone https://github.com/danii1kq/telegram-to-obsidian_ai-agent.git
-   cd telegram-to-obsidian_ai-agent/deploy
-   ```
-
-2. Создаём файл окружения и заполняем значения:
-
-   ```bash
-   cp .env.example .env
-   chmod 600 .env
-   ```
-
-   | Переменная | Значение |
-   | --- | --- |
-   | `TELEGRAM_BOT_TOKEN` | токен от [@BotFather](https://t.me/BotFather) |
-   | `ALLOWED_TELEGRAM_ID` | твой Telegram id, только он обслуживается |
-   | `TELEGRAM_MODE` | по умолчанию `polling`, `webhook`, когда у бота есть публичный https-адрес |
-   | `TELEGRAM_WEBHOOK_URL` | публичный https-адрес webhook, для режима webhook |
-   | `TELEGRAM_WEBHOOK_SECRET` | секрет, который Telegram шлёт с каждым вызовом webhook |
-   | `VAULT_HOST_PATH` | папка хранилища на сервере, например `/opt/obsidian-vault` |
-   | `LLM_API_KEY` | ключ модельного провайдера |
-   | `HERMES_MODEL` | модель, по умолчанию `beam-free` |
-   | `HERMES_FALLBACK_MODEL` | резервная модель, если основная не ответила |
-   | `MINI_APP_URL` | публичный https-адрес мини-приложения, для кнопки в меню |
-   | `MINI_APP_TOKEN` | токен для браузера, он едет в адресе приложения |
-   | `DEFAULT_LANGUAGE` | язык пользователя, который не выбирал, по умолчанию `en` |
-   | `OWNER_LANGUAGE` | язык владельца бота, по умолчанию `ru` |
-   | `PUID` / `PGID` | владелец файлов заметок, по умолчанию `1000` |
-
-3. Готовим папку хранилища и собираем контейнеры:
-
-   ```bash
-   mkdir -p /opt/obsidian-vault
-   sudo chown -R 1000:1000 /opt/obsidian-vault
-   docker compose up -d --build
-   ```
-
-4. Проверяем, что всё работает:
-
-   ```bash
-   docker compose ps
-   docker compose logs -f app
-   ```
-
-Первая сборка ставит Hermes Agent и идёт долго, дальше используются кэшированные слои.
-
-Образ есть и в реестре, так что при деплое его можно не собирать:
-
-```bash
-docker pull ghcr.io/danii1kq/telegram-to-obsidian_ai-agent:latest
-```
-
-### Мини-приложение
-
-Заметки доступны ещё и как маленькое веб-приложение внутри Telegram. Кнопка
-в меню чата открывает его: список заметок, поиск и чтение заметки вместе с
-картинками. Приложение следует теме Telegram, поэтому в светлой и в тёмной
-теме выглядит одинаково хорошо.
-
-Данные не отдаются никому: мини-приложение присылает подписанные данные
-Telegram, а бэкенд проверяет их токеном бота. Вне Telegram подписанных данных
-нет, поэтому в адрес приложения добавляется токен владельца:
-
-```
-https://<your-host>/?token=<MINI_APP_TOKEN>
-```
-
-Фронтенд лежит в `web/`, он собирается через Vite и раздаётся тем же
-процессом, в котором работает бот.
-
-Telegram принимает для мини-приложения только https-ссылки, поэтому
-приложение публикуется через туннель Cloudflare. Скрипт `deploy/tunnel.sh`
-поднимает туннель, следит за его адресом и записывает его в файл окружения
-деплоя:
-
-```bash
-bash deploy/tunnel.sh --install
-```
-
-Через тот же туннель можно провести и webhook бота: поставь
-`TELEGRAM_MODE=webhook` и `TELEGRAM_WEBHOOK_URL=https://<адрес туннеля>/webhook`.
-
-### MCP-сервер хранилища отдельным пакетом
-
-Инструменты хранилища работают с любым MCP-клиентом, не только с ботом. Они
-опубликованы отдельным пакетом:
-
-```bash
-npm install -g @danii1kq/vault-mcp
-OBSIDIAN_VAULT_PATH=/path/to/vault vault-mcp
-```
-
-Описание пакета смотри в [packages/vault-mcp](packages/vault-mcp).
-
-### Syncthing и ноутбук
-
-1. Веб-интерфейс Syncthing на порту 8384 сервера. В интернет он не открыт,
-   владелец заходит в него через туннель:
-
-   ```bash
-   ssh -L 8384:127.0.0.1:8384 user@your-server
-   # открыть http://127.0.0.1:8384
-   ```
-
-2. В веб-интерфейсе: `Actions` -> `Show ID`, это id сервера.
-
-3. На ноутбуке: ставим Syncthing, добавляем сервер как удалённое устройство с этим
-   id и подтверждаем устройство на сервере.
-
-4. На сервере: `Actions` -> `Add Folder`, путь `/vault`, имя папки (например
-   `obsidian`), отдаём доступ ноутбуку.
-
-5. На ноутбуке: подтверждаем папку и указываем в Obsidian именно на неё.
-
-Через несколько секунд заметки появляются на ноутбуке, а бот продолжает работать
-на сервере.
-
-### Обновление
-
-```bash
-git pull
-docker compose up -d --build
-```
-
-Скрипт `deploy/deploy.sh` делает то же самое и откатывается на прошлый образ,
-если новый контейнер не прошёл проверку.
-
-### Локальная разработка
-
-```bash
-npm install
-npm test
-npm run lint
-npm run typecheck
-npm run build
-```
-
-Фронтенд мини-приложения лежит в `web/`:
-
-```bash
-cd web
-npm install
-npm run dev     # dev-сервер на порту 5173
-npm run build
-```
-
-MCP-сервер хранилища собирается как отдельный пакет:
-
-```bash
-npm run build --prefix packages/vault-mcp
-```
-
-Проверка всей цепочки без Telegram:
-
-```bash
-node dist/selftest.js "идея для бизнеса"
-```
-
-### Проект
-
-- [CONTRIBUTING.md](CONTRIBUTING.md) - как работать с проектом, правила кода
-  и коммитов.
-- [CODE_OF_CONDUCT.md](CODE_OF_CONDUCT.md) - правила поведения.
-- [SECURITY.md](SECURITY.md) - как сообщить о проблеме с безопасностью.
-- [CHANGELOG.md](CHANGELOG.md) - что менялось в каждой версии.
-- Релизы делаются тегом: workflow собирает образ, кладёт его в реестр GitHub
-  и публикует заметки релиза.
-
-### Безопасность
-
-- Бот отвечает только ids из `ALLOWED_TELEGRAM_ID`.
-- Ключи лежат в `deploy/.env` на сервере, в git их нет.
-- Ключ модели подставляет локальный прокси, агент его не видит.
-- MCP-инструменты не могут писать за пределы хранилища.
-- API мини-приложения проверяет подписанные данные Telegram токеном бота, а
-  вне Telegram требует токен владельца.
-- Webhook бота проверяет секрет, который Telegram шлёт с каждым вызовом.
-- Файлы владельца лежат в хранилище, бот никуда их не отправляет.
-
----
-
 ## License
 
 MIT. The Obsidian skill is a part of Hermes Agent (MIT, Teknium).
+
+[Русская версия](README-ru.md)

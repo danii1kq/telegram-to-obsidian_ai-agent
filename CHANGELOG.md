@@ -9,6 +9,8 @@ the project follows [Semantic Versioning](https://semver.org).
 
 - The title of the file of the month is in the language of the owner now:
   `October 2026` for the English user, `Октябрь 2026` for the Russian one.
+- The README is in English and the Russian version lives in `README-ru.md`,
+  the two files link to each other at the top.
 
 ## [0.2.1] - 2026-10-22
 

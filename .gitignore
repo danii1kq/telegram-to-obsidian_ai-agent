@@ -1,7 +1,8 @@
 # === Skills ===
 # Установленные скиллы (npx skills add) не коммитятся — восстанавливаются из skills-lock.json
+# Сам skills-lock.json коммитится: без него восстановить нечего.
 .agents/skills/
-skills-lock.json
+.perch/
 
 # === Секреты и окружение ===
 .env

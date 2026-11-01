@@ -66,6 +66,8 @@ export type Messages = {
   size: (bytes: number) => string;
   /** The number of the days of the summaries. */
   daysCount: (count: number) => string;
+  /** The warning about the conflict copies of Syncthing next to a note. */
+  conflictWarning: (count: number, names: string) => string;
 };
 
 const en: Messages = {
@@ -129,6 +131,10 @@ const en: Messages = {
   uptimeMinutes: (minutes) => `${minutes} min`,
   size: (bytes) => formatBytes(bytes, "en-GB"),
   daysCount: (count) => `${count} ${count === 1 ? "day" : "days"}`,
+  conflictWarning: (count, names) =>
+    count === 1
+      ? `Syncthing kept a second version of this note: ${names}. The other device wrote it at the same time, so it holds words that are not in the note.`
+      : `Syncthing kept ${count} second versions of this note: ${names}. Another device wrote it at the same time, so they hold words that are not in the note.`,
 };
 
 const ru: Messages = {
@@ -192,6 +198,10 @@ const ru: Messages = {
   uptimeMinutes: (minutes) => `${minutes} мин`,
   size: (bytes) => formatBytes(bytes, "ru-RU"),
   daysCount: (count) => `дней: ${count}`,
+  conflictWarning: (count, names) =>
+    count === 1
+      ? `Syncthing сохранил вторую версию этой заметки: ${names}. Другое устройство писало её одновременно, в ней есть слова, которых нет в заметке.`
+      : `Syncthing сохранил вторых версий этой заметки: ${count} (${names}). Другие устройства писали её одновременно, в них есть слова, которых нет в заметке.`,
 };
 
 /**

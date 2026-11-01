@@ -181,7 +181,7 @@ async function main(): Promise<void> {
             { config, hermes, vault, logger: logger.child("pipeline") },
             { language },
           );
-          await bot.api.sendMessage(chatId, result.status);
+          await bot.api.sendMessage(chatId, statusWithConflicts(result, language));
           await record(result, userId);
         } catch (error) {
           logger.error("could not process the message", { error: String(error) });
@@ -217,7 +217,7 @@ async function main(): Promise<void> {
             { config, hermes, vault, logger: logger.child("pipeline") },
             { attachment: saved, language },
           );
-          await bot.api.sendMessage(chatId, result.status);
+          await bot.api.sendMessage(chatId, statusWithConflicts(result, language));
           await record(result, userId);
         } catch (error) {
           logger.error("could not save the file", { error: String(error) });
@@ -456,6 +456,19 @@ async function main(): Promise<void> {
   } else {
     await startPolling(bot, logger);
   }
+}
+
+/**
+ * The status line of a write, with the warning about the conflict copies of
+ * Syncthing when there are any.
+ *
+ * A conflict copy is not an error of the write, so it does not replace the
+ * status: it is added under it, where the owner cannot miss it.
+ */
+function statusWithConflicts(result: ProcessResult, language: Language): string {
+  if (result.conflicts.length === 0) return result.status;
+  const names = result.conflicts.join(", ");
+  return `${result.status}\n\n${messages(language).conflictWarning(result.conflicts.length, names)}`;
 }
 
 /**

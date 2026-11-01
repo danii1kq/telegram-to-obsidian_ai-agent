@@ -1,3 +1,4 @@
+import path from "node:path";
 import type { AppConfig } from "./config.js";
 import type { HermesClient } from "./hermes/client.js";
 import { buildPrompt } from "./hermes/prompt.js";
@@ -27,6 +28,8 @@ export interface ProcessResult {
   block?: string;
   /** The size of the note after the write, in bytes. */
   bytes: number;
+  /** Syncthing conflict copies that appeared next to the note. */
+  conflicts: string[];
 }
 
 /**
@@ -88,6 +91,7 @@ export async function processMessage(
       usedFallback: false,
       agentText: run.text,
       bytes: last.bytes,
+      conflicts: await conflictsOf(deps.vault, last.path),
       ...(last.block ? { block: last.block } : {}),
     };
   }
@@ -131,6 +135,7 @@ async function fallbackWrite(
       usedFallback: true,
       agentText,
       bytes: result.bytes,
+      conflicts: result.conflictFiles.map((file) => path.basename(file)),
       block: normalizeDashes(block),
     };
   }
@@ -147,6 +152,7 @@ async function fallbackWrite(
     usedFallback: true,
     agentText,
     bytes: result.bytes,
+    conflicts: result.conflictFiles.map((file) => path.basename(file)),
   };
 }
 
@@ -183,6 +189,17 @@ async function applyTags(
   await vault
     .writeNote(relativePath, merged, { source: "agent", autoLink: false })
     .catch(() => undefined);
+}
+
+/**
+ * The conflict copies of Syncthing that sit next to a note.
+ *
+ * A conflict copy means two devices wrote the same note and Syncthing kept
+ * both. The note itself is fine, but the owner has to know: the other version
+ * holds words that are in neither of the two files.
+ */
+async function conflictsOf(vault: VaultOperations, relativePath: string): Promise<string[]> {
+  return vault.conflictCopies(relativePath).catch(() => []);
 }
 
 /** Looks for a note that is about the same topic as the message. */

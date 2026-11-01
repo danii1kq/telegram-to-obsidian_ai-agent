@@ -308,8 +308,26 @@ export class VaultOperations {
     return { removed: result.removed, relativePath: result.relativePath };
   }
 
-  /** Notes that carry a tag in their frontmatter, the newest first. */
-  async listByTag(tag: string): Promise<NoteInfo[]> {
+  /**
+   * The conflict copies of Syncthing that sit next to a note.
+   *
+   * Syncthing names them `<note>.sync-conflict-<date>-<time>-<device>.md`.
+   * They are not notes of the vault, they are the other version of a note that
+   * two devices wrote at once, so the owner is told about them.
+   */
+  async conflictCopies(targetPath: string): Promise<string[]> {
+    const absolute = resolveInsideVault(this.vaultRoot, targetPath);
+    const directory = path.dirname(absolute);
+    const stem = path.basename(absolute).replace(/\.md$/i, "");
+    const entries = await readdir(directory).catch(() => [] as string[]);
+    return entries
+      .filter((entry) => entry.startsWith(`${stem}.sync-conflict-`))
+      .map((entry) => toRelative(this.vaultRoot, path.join(directory, entry)));
+  }
+
+  /** Notes that carry a tag in their frontmatter, the newest first. */ async listByTag(
+    tag: string,
+  ): Promise<NoteInfo[]> {
     const wanted = tag.trim().toLowerCase();
     if (!wanted) return [];
 

@@ -142,4 +142,24 @@ describe("VaultOperations", () => {
     expect(file.content).toBe("hello");
     expect(file.relativePath).toBe("Manual.md");
   });
+
+  it("finds the conflict copies of Syncthing next to a note", async () => {
+    const { vault, operations } = await makeOperations();
+    await operations.writeNote("Diary.md", "the note itself");
+    await writeFile(
+      path.join(vault, "Diary.sync-conflict-20261101-101010-ABCDEF.md"),
+      "the other version",
+      "utf8",
+    );
+
+    const conflicts = await operations.conflictCopies("Diary.md");
+    expect(conflicts).toHaveLength(1);
+    expect(conflicts[0]).toContain("Diary.sync-conflict-");
+  });
+
+  it("reports no conflicts for a note that has none", async () => {
+    const { operations } = await makeOperations();
+    await operations.writeNote("Diary.md", "the note itself");
+    expect(await operations.conflictCopies("Diary.md")).toEqual([]);
+  });
 });

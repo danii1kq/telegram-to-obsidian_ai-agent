@@ -25,6 +25,8 @@ export interface ProcessResult {
   agentText: string;
   /** The block that was appended, so the append can be undone. */
   block?: string;
+  /** The size of the note after the write, in bytes. */
+  bytes: number;
 }
 
 /**
@@ -85,6 +87,7 @@ export async function processMessage(
       path: last.path,
       usedFallback: false,
       agentText: run.text,
+      bytes: last.bytes,
       ...(last.block ? { block: last.block } : {}),
     };
   }
@@ -107,7 +110,7 @@ async function fallbackWrite(
   language: Language,
   attachment?: SavedAttachment,
 ): Promise<ProcessResult> {
-  const title = deriveTitle(text);
+  const title = deriveTitle(text, language);
   const existing = await findRelatedNote(text, title, deps.vault);
   const stamp = deps.vault.currentDateTime();
   const tags = extractTags(text);
@@ -127,6 +130,7 @@ async function fallbackWrite(
       path: result.relativePath,
       usedFallback: true,
       agentText,
+      bytes: result.bytes,
       block: normalizeDashes(block),
     };
   }
@@ -142,6 +146,7 @@ async function fallbackWrite(
     path: result.relativePath,
     usedFallback: true,
     agentText,
+    bytes: result.bytes,
   };
 }
 
@@ -204,13 +209,13 @@ async function findRelatedNote(
 }
 
 /** Builds a short title out of the message. */
-export function deriveTitle(text: string): string {
+export function deriveTitle(text: string, language: Language = "en"): string {
   const firstLine = text.split("\n").find((line) => line.trim().length > 0) ?? text;
   const cleaned = firstLine
     .replace(/[#>*_`]/g, "")
     .replace(/\s+/g, " ")
     .trim();
-  if (!cleaned) return "Заметка";
+  if (!cleaned) return messages(language).untitledNote;
   const words = cleaned.split(" ").slice(0, 7).join(" ");
   return words.length > 60 ? `${words.slice(0, 57)}...` : words;
 }
@@ -266,8 +271,10 @@ export function extractKeywords(text: string): string[] {
   ].slice(0, 6);
 }
 
-/** The status line of a write, in the language of the owner. */
-function statusFor(event: VaultEvent, language: Language): string {
+/** The status line of a write, in the language of the owner. */ function statusFor(
+  event: VaultEvent,
+  language: Language,
+): string {
   const text = messages(language);
   switch (event.action) {
     case "create":

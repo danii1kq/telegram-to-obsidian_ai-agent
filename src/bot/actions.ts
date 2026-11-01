@@ -158,9 +158,13 @@ export async function buildStatus(deps: StatusDeps, language: Language): Promise
   const bytes = vaultNotes.reduce((sum, note) => sum + note.size, 0);
 
   const lines = [
-    messages(language).statusRunning(uptime(deps.uptimeMs)),
+    messages(language).statusRunning(uptime(deps.uptimeMs, language)),
     messages(language).statusModel(deps.model, deps.fallbackModel),
-    messages(language).statusNotes(total[0]?.value ?? 0, vaultNotes.length, formatBytes(bytes)),
+    messages(language).statusNotes(
+      total[0]?.value ?? 0,
+      vaultNotes.length,
+      messages(language).size(bytes),
+    ),
     messages(language).statusQueue(deps.queueSize),
     messages(language).statusSummary(summaries[0]?.date ?? "-"),
     messages(language).statusTime(deps.now),
@@ -174,20 +178,14 @@ export async function buildStatus(deps: StatusDeps, language: Language): Promise
 }
 
 /** The uptime of the bot in a readable form. */
-function uptime(milliseconds: number): string {
+function uptime(milliseconds: number, language: Language): string {
+  const text = messages(language);
   const minutes = Math.floor(milliseconds / 60_000);
   const hours = Math.floor(minutes / 60);
   const days = Math.floor(hours / 24);
-  if (days > 0) return `${days} д ${hours % 24} ч`;
-  if (hours > 0) return `${hours} ч ${minutes % 60} мин`;
-  return `${minutes} мин`;
-}
-
-/** The size of the vault in a readable form. */
-function formatBytes(bytes: number): string {
-  if (bytes < 1024) return `${bytes} Б`;
-  if (bytes < 1024 * 1024) return `${(bytes / 1024).toFixed(1)} КБ`;
-  return `${(bytes / (1024 * 1024)).toFixed(1)} МБ`;
+  if (days > 0) return text.uptimeDays(days, hours % 24);
+  if (hours > 0) return text.uptimeHours(hours, minutes % 60);
+  return text.uptimeMinutes(minutes);
 }
 
 /** True when the file was changed after the bot wrote it. */

@@ -3,6 +3,17 @@ import type { Bot, Context } from "grammy";
 /** The biggest file a bot may download from Telegram. */
 export const MAX_FILE_BYTES = 20 * 1024 * 1024;
 
+/** Raised when a file of the owner does not fit into the limit. */
+export class AttachmentTooBigError extends Error {
+  constructor(
+    readonly bytes: number,
+    readonly limit: number,
+  ) {
+    super(`the file is too big: ${bytes} bytes, the limit is ${limit}`);
+    this.name = "AttachmentTooBigError";
+  }
+}
+
 export interface IncomingAttachment {
   fileId: string;
   fileName: string;
@@ -73,7 +84,13 @@ export function describeAttachment(ctx: Context): IncomingAttachment | null {
   return null;
 }
 
-/** Downloads a file from Telegram. */
+/**
+ * Downloads a file from Telegram.
+ *
+ * Telegram tells the size of a file before it is downloaded, so a file that
+ * does not fit into the limit is refused before the bytes travel. The size is
+ * checked once more after the download, because the declared one is a hint.
+ */
 export async function downloadAttachment(
   bot: Bot,
   token: string,
@@ -84,6 +101,9 @@ export async function downloadAttachment(
   if (!file.file_path) {
     throw new Error("Telegram did not give a path for the file");
   }
+  if (typeof file.file_size === "number" && file.file_size > maxBytes) {
+    throw new AttachmentTooBigError(file.file_size, maxBytes);
+  }
 
   const response = await fetch(`https://api.telegram.org/file/bot${token}/${file.file_path}`);
   if (!response.ok) {
@@ -92,7 +112,7 @@ export async function downloadAttachment(
 
   const buffer = new Uint8Array(await response.arrayBuffer());
   if (buffer.byteLength > maxBytes) {
-    throw new Error(`the file is too big: ${buffer.byteLength} bytes`);
+    throw new AttachmentTooBigError(buffer.byteLength, maxBytes);
   }
   return buffer;
 }

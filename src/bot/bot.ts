@@ -2,7 +2,7 @@ import { Bot, type Context, InlineKeyboard } from "grammy";
 import type { AppConfig } from "../config.js";
 import { isLanguage, LANGUAGE_NAMES, type Language, messages } from "../i18n/index.js";
 import type { Logger } from "../logger.js";
-import { describeAttachment, downloadAttachment } from "./attachments.js";
+import { AttachmentTooBigError, describeAttachment, downloadAttachment } from "./attachments.js";
 
 export interface BotDeps {
   config: AppConfig;
@@ -166,11 +166,22 @@ export function createBot(deps: BotDeps): Bot {
         language,
       });
     } catch (error) {
+      // The limit is the only failure the owner can do something about, so it
+      // is the only one that gets the message about the size.
+      if (error instanceof AttachmentTooBigError) {
+        logger.warn("a file of the owner is over the limit", {
+          fileName: attachment.fileName,
+          bytes: error.bytes,
+          limit: error.limit,
+        });
+        await ctx.reply(messages(language).fileTooBig("20 MB")).catch(() => undefined);
+        return;
+      }
       logger.error("could not save the file", {
         error: String(error),
         fileName: attachment.fileName,
       });
-      await ctx.reply("⚠️ The file is too big, the limit is 20 MB.").catch(() => undefined);
+      await ctx.reply(messages(language).errorSave).catch(() => undefined);
     }
   };
 

@@ -42,7 +42,8 @@ describe("deriveTitle", () => {
   });
 
   it("has a fallback for an empty message", () => {
-    expect(deriveTitle("   ")).toBe("Заметка");
+    expect(deriveTitle("   ")).toBe("Note");
+    expect(deriveTitle("   ", "ru")).toBe("Заметка");
   });
 });
 

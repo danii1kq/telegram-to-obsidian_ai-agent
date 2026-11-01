@@ -51,6 +51,22 @@ export type Messages = {
   languageChanged: (language: string) => string;
   languageUnknown: string;
   languageButton: string;
+  /** The label of the button that opens the Mini App. */
+  openNotes: string;
+  /** The name of a file that came without a caption. */
+  attachmentFallback: (name: string) => string;
+  /** The title of a note that could not be derived from the message. */
+  untitledNote: string;
+  /** The answer of the bot when the file is bigger than the limit. */
+  fileTooBig: (limit: string) => string;
+  /** The uptime of the bot, split into its parts. */
+  uptimeDays: (days: number, hours: number) => string;
+  uptimeHours: (hours: number, minutes: number) => string;
+  uptimeMinutes: (minutes: number) => string;
+  /** The size of the vault. */
+  size: (bytes: number) => string;
+  /** The number of the days of the summaries. */
+  daysCount: (count: number) => string;
 };
 
 const en: Messages = {
@@ -106,6 +122,15 @@ const en: Messages = {
   languageChanged: (language) => `The language of the bot is now: ${language}.`,
   languageUnknown: "I know only English and Russian: /language en or /language ru.",
   languageButton: "Choose the language of the bot",
+  openNotes: "Open the notes",
+  attachmentFallback: (name) => `File ${name}`,
+  untitledNote: "Note",
+  fileTooBig: (limit) => `The file is too big, the limit is ${limit}.`,
+  uptimeDays: (days, hours) => `${days} d ${hours} h`,
+  uptimeHours: (hours, minutes) => `${hours} h ${minutes} min`,
+  uptimeMinutes: (minutes) => `${minutes} min`,
+  size: (bytes) => formatBytes(bytes, "en-GB"),
+  daysCount: (count) => `${count} ${count === 1 ? "day" : "days"}`,
 };
 
 const ru: Messages = {
@@ -161,7 +186,34 @@ const ru: Messages = {
   languageChanged: (language) => `Язык бота теперь: ${language}.`,
   languageUnknown: "Я знаю только английский и русский: /language en или /language ru.",
   languageButton: "Выбери язык бота",
+  openNotes: "Открыть заметки",
+  attachmentFallback: (name) => `Файл ${name}`,
+  untitledNote: "Заметка",
+  fileTooBig: (limit) => `Файл слишком большой, максимум ${limit}.`,
+  uptimeDays: (days, hours) => `${days} д ${hours} ч`,
+  uptimeHours: (hours, minutes) => `${hours} ч ${minutes} мин`,
+  uptimeMinutes: (minutes) => `${minutes} мин`,
+  size: (bytes) => formatBytes(bytes, "ru-RU"),
+  daysCount: (count) => `дней: ${count}`,
 };
+
+/**
+ * The size of the vault in a readable form. The units come from Intl, so the
+ * English text says kB and the Russian one says кБ without a table of its own.
+ */
+function formatBytes(bytes: number, locale: string): string {
+  const format = (value: number, unit: "byte" | "kilobyte" | "megabyte") =>
+    new Intl.NumberFormat(locale, {
+      style: "unit",
+      unit,
+      unitDisplay: "short",
+      maximumFractionDigits: 1,
+    }).format(value);
+
+  if (bytes < 1024) return format(bytes, "byte");
+  if (bytes < 1024 * 1024) return format(bytes / 1024, "kilobyte");
+  return format(bytes / (1024 * 1024), "megabyte");
+}
 
 const CATALOGS: Record<Language, Messages> = { en, ru };
 

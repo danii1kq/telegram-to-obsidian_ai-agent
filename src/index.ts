@@ -1,4 +1,4 @@
-import { mkdir } from "node:fs/promises";
+﻿import { mkdir } from "node:fs/promises";
 import { createServer, type IncomingMessage, type ServerResponse } from "node:http";
 import path from "node:path";
 import { desc } from "drizzle-orm";
@@ -124,7 +124,7 @@ async function main(): Promise<void> {
       path: result.path,
       title: result.title,
       source: result.usedFallback ? "fallback" : "agent",
-      bytes: 0,
+      bytes: result.bytes,
       telegramUserId: String(userId),
     });
     if (result.action !== "none") {
@@ -178,7 +178,7 @@ async function main(): Promise<void> {
             bytes: saved.bytes,
           });
 
-          const text = caption.trim() || `Файл ${saved.name}`;
+          const text = caption.trim() || messages(language).attachmentFallback(saved.name);
           const result = await processMessage(
             text,
             userId,
@@ -228,7 +228,7 @@ async function main(): Promise<void> {
         }
         const notice = summaryNotice(summary.day, config.miniApp.url, language);
         await bot.api
-          .sendMessage(chatId, notice.text, summaryMarkup(notice))
+          .sendMessage(chatId, notice.text, summaryMarkup(notice, language))
           .catch(() => undefined);
       });
 
@@ -246,7 +246,7 @@ async function main(): Promise<void> {
         if (!summary) return;
         const notice = summaryNotice(summary.day, config.miniApp.url, language);
         await bot.api
-          .sendMessage(ownerChatId, notice.text, summaryMarkup(notice))
+          .sendMessage(ownerChatId, notice.text, summaryMarkup(notice, language))
           .catch(() => undefined);
       });
     },
@@ -367,11 +367,12 @@ async function main(): Promise<void> {
   // The summary of the days that were missed while the bot was down.
   void queue.push(async () => {
     try {
-      const summaries = await catchUpDailySummaries(dailyDeps);
+      const language = await getLanguage(ownerChatId);
+      const summaries = await catchUpDailySummaries(dailyDeps, 3, language);
       for (const summary of summaries) {
-        const notice = summaryNotice(summary.day, config.miniApp.url);
+        const notice = summaryNotice(summary.day, config.miniApp.url, language);
         await bot.api
-          .sendMessage(ownerChatId, notice.text, summaryMarkup(notice))
+          .sendMessage(ownerChatId, notice.text, summaryMarkup(notice, language))
           .catch(() => undefined);
       }
     } catch (error) {
@@ -397,10 +398,13 @@ async function main(): Promise<void> {
  * The markup of the notice of the daily summary: the button opens the Mini
  * App with the notes.
  */
-function summaryMarkup(notice: SummaryNotice): { reply_markup: InlineKeyboard } | undefined {
+function summaryMarkup(
+  notice: SummaryNotice,
+  language: Language,
+): { reply_markup: InlineKeyboard } | undefined {
   if (!notice.miniAppUrl) return undefined;
   return {
-    reply_markup: new InlineKeyboard().webApp("Открыть заметки", notice.miniAppUrl),
+    reply_markup: new InlineKeyboard().webApp(messages(language).openNotes, notice.miniAppUrl),
   };
 }
 

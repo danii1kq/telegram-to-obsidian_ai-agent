@@ -3,7 +3,7 @@ import type { AppConfig } from "../config.js";
 import type { Database } from "../db/index.js";
 import { dailySummaries, notesLog } from "../db/schema.js";
 import type { HermesClient } from "../hermes/client.js";
-import type { Language } from "../i18n/index.js";
+import { type Language, messages } from "../i18n/index.js";
 import type { Logger } from "../logger.js";
 import { readEvents } from "../vault/events.js";
 import { normalizeDashes, type VaultOperations } from "../vault/operations.js";
@@ -228,10 +228,7 @@ export function summaryNotice(
   miniAppUrl?: string,
   language: Language = "ru",
 ): SummaryNotice {
-  const text =
-    language === "en"
-      ? `The summary of ${day} is ready. It is in the Mini App.`
-      : `Итоги за ${day} готовы. Их можно посмотреть в мини-приложении.`;
+  const text = messages(language).summaryReady(day);
   return {
     text,
     ...(miniAppUrl ? { miniAppUrl } : {}),
@@ -338,7 +335,6 @@ export async function writeSection(
     await vault.writeNote(file, `${header}\n${section}`, { source: "agent", autoLink: false });
     return file;
   }
-
   const content = current.content;
   const heading = `## ${day}`;
   const index = content.indexOf(heading);

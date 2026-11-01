@@ -37,6 +37,8 @@ export interface VaultOperationsDeps {
 
 const MAX_SCANNED_BYTES = 512 * 1024;
 const MAX_SEARCH_HITS = 60;
+/** How long a regular expression may take on a short sample before it is dropped. */
+const REGEX_SAMPLE_BUDGET_MS = 50;
 
 /** The long dashes that are never written into a note. */
 const LONG_DASHES = /[—–‒―]/g;
@@ -126,12 +128,17 @@ export class VaultOperations {
   /**
    * Searches the vault. `files` matches note names, `content` matches the
    * text inside the notes. Both accept a glob (`*.md`) or a plain substring.
+   *
+   * The content is matched as a plain substring unless `regex` is set: a
+   * pattern from a chat message is not a regular expression, and a pattern
+   * like `(a+)+` takes the whole process down with a backtracking blowup.
    */
   async searchFiles(params: {
     target?: "files" | "content";
     pattern: string;
     path?: string;
     file_glob?: string;
+    regex?: boolean;
   }): Promise<SearchHit[]> {
     const target = params.target ?? "files";
     // The pattern can be a regular expression, so it is kept short: a long
@@ -155,7 +162,7 @@ export class VaultOperations {
       return hits.slice(0, MAX_SEARCH_HITS);
     }
 
-    const contentMatcher = buildContentMatcher(pattern);
+    const contentMatcher = buildContentMatcher(pattern, params.regex === true);
     for (const note of notes) {
       if (glob && !matchesGlob(note.relativePath, glob)) continue;
       const full = path.join(this.vaultRoot, note.relativePath);
@@ -401,15 +408,37 @@ function buildMatcher(pattern: string): (value: string) => boolean {
   return (value) => value.toLowerCase().includes(needle);
 }
 
-/** Builds a matcher for note content: a regular expression when possible. */
-function buildContentMatcher(pattern: string): (line: string) => boolean {
+/**
+ * Builds a matcher for note content.
+ *
+ * A plain substring is the default, because that is what a query typed by a
+ * person means. A regular expression is only built when the caller asks for
+ * it, and even then it is tried on a short sample first: a pattern with
+ * nested quantifiers can backtrack for minutes on a single line.
+ */
+function buildContentMatcher(pattern: string, regex: boolean): (line: string) => boolean {
+  const needle = pattern.toLowerCase();
+  const plain = (line: string) => line.toLowerCase().includes(needle);
+  if (!regex) return plain;
+
+  let compiled: RegExp;
   try {
-    const regex = new RegExp(pattern, "i");
-    return (line) => regex.test(line);
+    compiled = new RegExp(pattern, "i");
   } catch {
-    const needle = pattern.toLowerCase();
-    return (line) => line.toLowerCase().includes(needle);
+    return plain;
   }
+
+  // A pattern that cannot answer a short line quickly is not used at all.
+  const sample = "the quick brown fox jumps over the lazy dog 0123456789";
+  const startedAt = Date.now();
+  try {
+    compiled.test(sample);
+  } catch {
+    return plain;
+  }
+  if (Date.now() - startedAt > REGEX_SAMPLE_BUDGET_MS) return plain;
+
+  return (line) => compiled.test(line);
 }
 
 function hasGlob(pattern: string): boolean {

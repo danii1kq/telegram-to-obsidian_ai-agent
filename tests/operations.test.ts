@@ -84,6 +84,33 @@ describe("VaultOperations", () => {
     expect(byContent[0]?.relativePath).toBe("Health.md");
   });
 
+  it("treats the pattern of a search as a plain text, not as a regular expression", async () => {
+    const { operations } = await makeOperations();
+    await operations.writeNote("Health.md", "running every morning");
+
+    // A pattern like this one hangs the process for minutes when it is
+    // compiled as a regular expression.
+    const startedAt = Date.now();
+    const hits = await operations.searchFiles({ target: "content", pattern: "(a+)+$" });
+    expect(Date.now() - startedAt).toBeLessThan(2000);
+    expect(hits).toHaveLength(0);
+  });
+
+  it("uses a regular expression only when it is asked for", async () => {
+    const { operations } = await makeOperations();
+    await operations.writeNote("Health.md", "running every morning");
+
+    const plain = await operations.searchFiles({ target: "content", pattern: "runn.ng" });
+    expect(plain).toHaveLength(0);
+
+    const regex = await operations.searchFiles({
+      target: "content",
+      pattern: "runn.ng",
+      regex: true,
+    });
+    expect(regex[0]?.relativePath).toBe("Health.md");
+  });
+
   it("appends to a note and records the event", async () => {
     const { vault, operations } = await makeOperations();
     await operations.writeNote("Diary.md", "first");

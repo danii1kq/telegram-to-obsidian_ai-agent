@@ -19,7 +19,7 @@ const TOOLS = [
   {
     name: "search_files",
     description:
-      "Search the Obsidian vault. Use target 'files' to find notes by name, target 'content' to search inside notes. Returns the matching note paths.",
+      "Search the Obsidian vault. Use target 'files' to find notes by name, target 'content' to search inside notes. The pattern is a plain substring by default; set regex to true to use a regular expression. Returns the matching note paths.",
     inputSchema: {
       type: "object",
       properties: {
@@ -29,6 +29,10 @@ const TOOLS = [
         file_glob: {
           type: "string",
           description: "only match files with this glob, for example *.md",
+        },
+        regex: {
+          type: "boolean",
+          description: "treat the pattern as a regular expression instead of a plain substring",
         },
       },
       required: ["pattern"],
@@ -143,6 +147,7 @@ export async function runMcpServer(): Promise<void> {
             pattern: String(args.pattern ?? ""),
             path: args.path ? String(args.path) : undefined,
             file_glob: args.file_glob ? String(args.file_glob) : undefined,
+            regex: args.regex === true,
           });
           return text(
             hits.length === 0

@@ -16,7 +16,7 @@ import {
 } from "./daily/summary.js";
 import { localDate, previousDay } from "./daily/time.js";
 import { createDatabase } from "./db/index.js";
-import { dailySummaries, notesLog, undoLog } from "./db/schema.js";
+import { dailySummaries, notesLog, processedUpdates, undoLog } from "./db/schema.js";
 import { HermesClient } from "./hermes/client.js";
 import { type Language, messages } from "./i18n/index.js";
 import { createLlmProxy } from "./llm/proxy.js";
@@ -323,6 +323,17 @@ async function main(): Promise<void> {
     try {
       const body = await readBody(request);
       const update = JSON.parse(body) as Parameters<typeof bot.handleUpdate>[0];
+
+      // Telegram sends an update again when the answer did not arrive in time.
+      // A message that was already handled must not be written twice.
+      const updateId = typeof update.update_id === "number" ? String(update.update_id) : "";
+      if (updateId && !(await claimUpdate(updateId))) {
+        logger.info("an update that was already handled came again", { updateId });
+        response.writeHead(200, { "content-type": "application/json" });
+        response.end(JSON.stringify({ ok: true, duplicate: true }));
+        return;
+      }
+
       await bot.handleUpdate(update);
       response.writeHead(200, { "content-type": "application/json" });
       response.end(JSON.stringify({ ok: true }));
@@ -330,6 +341,27 @@ async function main(): Promise<void> {
       logger.error("the webhook call failed", { error: String(error) });
       response.writeHead(400, { "content-type": "application/json" });
       response.end(JSON.stringify({ ok: false }));
+    }
+  }
+
+  /**
+   * Remembers an update id and says whether it is new.
+   *
+   * The table is the one the schema already had for this purpose. A failure of
+   * the database must not drop a message of the owner, so an update whose id
+   * could not be written is handled anyway.
+   */
+  async function claimUpdate(updateId: string): Promise<boolean> {
+    try {
+      const inserted = await db
+        .insert(processedUpdates)
+        .values({ updateId, processedAt: new Date().toISOString() })
+        .onConflictDoNothing()
+        .returning({ updateId: processedUpdates.updateId });
+      return inserted.length > 0;
+    } catch (error) {
+      logger.warn("could not remember the update id", { updateId, error: String(error) });
+      return true;
     }
   }
   await new Promise<void>((resolve) => {
@@ -442,11 +474,28 @@ main().catch((error) => {
   process.exit(1);
 });
 
-/** Reads the body of a request. */
-function readBody(request: IncomingMessage): Promise<string> {
+/** The biggest update Telegram may send. A text message is far below it. */
+const MAX_WEBHOOK_BYTES = 1024 * 1024;
+
+/**
+ * Reads the body of a request.
+ *
+ * The webhook is open to the internet, so the body is capped: without the cap
+ * a single call could fill the memory of the process.
+ */
+function readBody(request: IncomingMessage, maxBytes = MAX_WEBHOOK_BYTES): Promise<string> {
   return new Promise((resolve, reject) => {
     const chunks: Buffer[] = [];
-    request.on("data", (chunk: Buffer) => chunks.push(chunk));
+    let size = 0;
+    request.on("data", (chunk: Buffer) => {
+      size += chunk.length;
+      if (size > maxBytes) {
+        reject(new Error(`the body of the request is over ${maxBytes} bytes`));
+        request.destroy();
+        return;
+      }
+      chunks.push(chunk);
+    });
     request.on("end", () => resolve(Buffer.concat(chunks).toString("utf8")));
     request.on("error", reject);
   });

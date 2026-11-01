@@ -38,6 +38,10 @@ const envSchema = z.object({
   LLM_PROXY_PORT: z.coerce.number().int().positive().default(11434),
   LLM_API_KEY: z.string().default(""),
   LLM_SESSION_ID: z.string().default(""),
+  /** The model that turns a voice message into text; empty disables it. */
+  TRANSCRIBE_MODEL: z.string().default(""),
+  /** How long a transcription may take. */
+  TRANSCRIBE_TIMEOUT_MS: z.coerce.number().int().positive().default(120_000),
 
   // --- Language -----------------------------------------------------------
   /** The language of a user that never chose one. */
@@ -101,6 +105,8 @@ export type AppConfig = {
     proxyPort: number;
     apiKey: string;
     sessionId: string;
+    transcribeModel: string;
+    transcribeTimeoutMs: number;
   };
   db: {
     path: string;
@@ -211,6 +217,8 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): AppConfig {
       proxyPort: raw.LLM_PROXY_PORT,
       apiKey: raw.LLM_API_KEY,
       sessionId: raw.LLM_SESSION_ID,
+      transcribeModel: raw.TRANSCRIBE_MODEL,
+      transcribeTimeoutMs: raw.TRANSCRIBE_TIMEOUT_MS,
     },
     db: {
       path: raw.DB_PATH,

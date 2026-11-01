@@ -30,6 +30,8 @@ export interface BotDeps {
     userId: number;
     chatId: number;
     language: Language;
+    /** True for a voice message or an audio file: it can be transcribed. */
+    audio?: boolean;
   }) => Promise<void>;
 }
 
@@ -164,6 +166,8 @@ export function createBot(deps: BotDeps): Bot {
         userId,
         chatId,
         language,
+        // A voice message and an audio file carry speech, a document does not.
+        audio: Boolean(ctx.message?.voice ?? ctx.message?.audio),
       });
     } catch (error) {
       // The limit is the only failure the owner can do something about, so it

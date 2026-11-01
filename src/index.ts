@@ -20,6 +20,7 @@ import { dailySummaries, notesLog, processedUpdates, undoLog } from "./db/schema
 import { HermesClient } from "./hermes/client.js";
 import { type Language, messages } from "./i18n/index.js";
 import { createLlmProxy } from "./llm/proxy.js";
+import { Transcriber } from "./llm/transcribe.js";
 import { createLogger, type Logger } from "./logger.js";
 import { createMiniApp } from "./miniapp/api.js";
 import { setMenuButton } from "./miniapp/menu.js";
@@ -77,6 +78,30 @@ async function main(): Promise<void> {
     logger: logger.child("llm"),
   });
   await proxy.start();
+
+  // The voice messages are read by the same relay: the proxy already holds the
+  // credential and the session, so the transcriber only knows the local address.
+  const transcriber = new Transcriber({
+    baseUrl: proxy.baseUrl,
+    model: config.llm.transcribeModel,
+    timeoutMs: config.llm.transcribeTimeoutMs,
+    logger: logger.child("transcribe"),
+  });
+  if (!transcriber.enabled) {
+    logger.info("the transcription of the voice messages is off, TRANSCRIBE_MODEL is empty");
+  }
+
+  /** The text of a voice message, or an empty string when it cannot be read. */
+  const transcribe = async (data: Uint8Array, fileName: string): Promise<string> => {
+    if (!transcriber.enabled) return "";
+    const result = await transcriber.transcribe(data, fileName);
+    if (!result.ok) {
+      logger.warn("the voice message was not transcribed", { error: result.error });
+      return "";
+    }
+    logger.info("the voice message is transcribed", { chars: result.text.length });
+    return result.text;
+  };
 
   const hermes = new HermesClient({
     bin: config.hermes.bin,
@@ -164,7 +189,7 @@ async function main(): Promise<void> {
         }
       });
     },
-    onAttachment: async ({ caption, file, userId, chatId, language }) => {
+    onAttachment: async ({ caption, file, userId, chatId, language, audio }) => {
       queue.push(async () => {
         try {
           const saved = await saveAttachment(
@@ -178,7 +203,14 @@ async function main(): Promise<void> {
             bytes: saved.bytes,
           });
 
-          const text = caption.trim() || messages(language).attachmentFallback(saved.name);
+          // A voice message is a thought said out loud, so it is turned into
+          // text and goes through the same pipeline as a typed message. When
+          // the transcription is off or fails, the file is still saved and the
+          // note points at it, so nothing is lost.
+          const spoken = audio ? await transcribe(file.data, file.name) : "";
+          const text =
+            spoken || caption.trim() || messages(language).attachmentFallback(saved.name);
+
           const result = await processMessage(
             text,
             userId,

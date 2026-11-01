@@ -505,6 +505,20 @@ button {
   color: var(--text);
 }
 
+/* The button that asks for the next page of the list. */
+.action.more {
+  display: flex;
+  justify-content: center;
+  width: calc(100% - 32px);
+  margin: 4px 16px 24px;
+  background: var(--fill);
+  color: var(--text);
+}
+
+.action.more:disabled {
+  opacity: 0.6;
+}
+
 /* --- The loading ----------------------------------------------------------- */
 
 .skeleton {

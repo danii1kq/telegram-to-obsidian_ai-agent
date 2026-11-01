@@ -91,7 +91,7 @@ async function makeMiniApp() {
     webRoot: path.join(root, "web"),
   });
 
-  return { handle, root };
+  return { handle, root, vault };
 }
 
 describe("validateInitData", () => {
@@ -288,5 +288,34 @@ describe("the api of the mini app", () => {
     expect(payload.notes[0]?.path).toBe("Ideas.md");
     expect(payload.notes[0]?.title).toBe("Ideas");
     expect(Array.isArray(payload.notes[0]?.tags)).toBe(true);
+  });
+
+  it("pages the notes and says when there are more", async () => {
+    const { handle, vault } = await makeMiniApp();
+    // The first note is already there, a few more make a second page.
+    for (let index = 2; index <= 5; index += 1) {
+      await vault.writeNote(`Note ${index}.md`, `the note number ${index}`);
+    }
+
+    const first = fakeResponse();
+    await handle(fakeRequest("/api/notes?limit=2&offset=0&token=secret-token"), first);
+    const firstPage = JSON.parse(first.body()) as {
+      notes: Array<{ path: string }>;
+      total: number;
+      hasMore: boolean;
+    };
+    expect(firstPage.notes).toHaveLength(2);
+    expect(firstPage.total).toBe(5);
+    expect(firstPage.hasMore).toBe(true);
+
+    const last = fakeResponse();
+    await handle(fakeRequest("/api/notes?limit=2&offset=4&token=secret-token"), last);
+    const lastPage = JSON.parse(last.body()) as {
+      notes: Array<{ path: string }>;
+      total: number;
+      hasMore: boolean;
+    };
+    expect(lastPage.notes).toHaveLength(1);
+    expect(lastPage.hasMore).toBe(false);
   });
 });

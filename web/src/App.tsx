@@ -27,6 +27,9 @@ import { type Language, type Texts, texts } from "./texts";
 
 type View = { name: "list" } | { name: "note"; path: string; title: string };
 
+/** How many notes one page of the list holds. */
+const PAGE_SIZE = 60;
+
 const telegram = window.Telegram?.WebApp;
 
 function haptic(kind: "light" | "medium" | "success" = "light"): void {
@@ -48,6 +51,8 @@ export default function App() {
   const [language, setLanguage] = useState<Language>("en");
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
+  const [hasMore, setHasMore] = useState(false);
+  const [loadingMore, setLoadingMore] = useState(false);
 
   const t = texts(language);
 
@@ -55,13 +60,34 @@ export default function App() {
     setLoading(true);
     setError(null);
     try {
-      setNotes(await fetchNotes(80));
+      const page = await fetchNotes(PAGE_SIZE, 0);
+      setNotes(page.notes);
+      setHasMore(page.hasMore);
     } catch (cause) {
       setError(cause instanceof Error ? cause.message : "the notes could not be loaded");
     } finally {
       setLoading(false);
     }
   }, []);
+
+  // The next page is asked for when the owner reaches the end of the list. A
+  // vault can hold thousands of notes, and the first screen only needs a few.
+  const loadMore = useCallback(async () => {
+    if (loadingMore || !hasMore) return;
+    setLoadingMore(true);
+    try {
+      const page = await fetchNotes(PAGE_SIZE, notes.length);
+      setNotes((current) => {
+        const seen = new Set(current.map((note) => note.path));
+        return [...current, ...page.notes.filter((note) => !seen.has(note.path))];
+      });
+      setHasMore(page.hasMore);
+    } catch {
+      // The list stays as it is, the owner can scroll again.
+    } finally {
+      setLoadingMore(false);
+    }
+  }, [hasMore, loadingMore, notes.length]);
 
   useEffect(() => {
     telegram?.ready();
@@ -216,6 +242,16 @@ export default function App() {
             <>
               <SummaryCard t={t} language={language} summaries={summaries} onOpen={openNote} />
               <NoteList t={t} language={language} notes={notes} onOpen={openNote} />
+              {hasMore ? (
+                <button
+                  className="action more"
+                  type="button"
+                  onClick={() => void loadMore()}
+                  disabled={loadingMore}
+                >
+                  {loadingMore ? t.loading : t.showMore}
+                </button>
+              ) : null}
             </>
           )}
         </>

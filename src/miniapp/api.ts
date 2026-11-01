@@ -282,12 +282,16 @@ export function createMiniApp(options: MiniAppOptions) {
       if (pathname === "/api/notes") {
         const limit = clamp(Number(url.searchParams.get("limit") ?? 60), 1, 200);
         const offset = Math.max(0, Number(url.searchParams.get("offset") ?? 0) || 0);
-        const notes = await vault.listNotesDetailed(limit + offset);
+        // The whole vault is listed to know whether there is a next page, and
+        // only the asked window is read from the disk.
+        const all = await vault.listNotes();
+        const page = await vault.listNotesDetailed(offset + limit);
+        const window = page.slice(offset);
         // The app works with the path of the note, the name of the file is a
         // detail of the vault.
         sendJson(response, 200, {
           ok: true,
-          notes: notes.slice(offset).map((note) => ({
+          notes: window.map((note) => ({
             path: note.relativePath,
             title: note.title,
             date: note.date,
@@ -296,6 +300,8 @@ export function createMiniApp(options: MiniAppOptions) {
             size: note.size,
             mtimeMs: note.mtimeMs,
           })),
+          total: all.length,
+          hasMore: offset + window.length < all.length,
         });
         return;
       }

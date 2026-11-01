@@ -51,9 +51,18 @@ async function request<T>(path: string): Promise<T> {
 }
 
 /** The notes of the vault, the newest first. */
-export async function fetchNotes(limit = 60): Promise<NoteSummary[]> {
-  const payload = await request<{ notes: NoteSummary[] }>(`/api/notes?limit=${limit}`);
-  return payload.notes;
+export async function fetchNotes(
+  limit = 60,
+  offset = 0,
+): Promise<{ notes: NoteSummary[]; total: number; hasMore: boolean }> {
+  const payload = await request<{ notes: NoteSummary[]; total: number; hasMore: boolean }>(
+    `/api/notes?limit=${limit}&offset=${offset}`,
+  );
+  return {
+    notes: payload.notes,
+    total: payload.total ?? payload.notes.length,
+    hasMore: payload.hasMore ?? false,
+  };
 }
 
 /** One note with its text. */

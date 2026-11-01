@@ -25,6 +25,7 @@ export type Texts = {
   retry: string;
   back: string;
   openErrorTitle: string;
+  showMore: string;
 };
 
 const en: Texts = {
@@ -45,6 +46,7 @@ const en: Texts = {
   retry: "Try again",
   back: "Back",
   openErrorTitle: "Could not open",
+  showMore: "Show more",
 };
 
 const ru: Texts = {
@@ -65,6 +67,7 @@ const ru: Texts = {
   retry: "Повторить",
   back: "Назад",
   openErrorTitle: "Не удалось открыть",
+  showMore: "Показать ещё",
 };
 
 const CATALOGS: Record<Language, Texts> = { en, ru };

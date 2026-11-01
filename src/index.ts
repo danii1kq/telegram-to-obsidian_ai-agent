@@ -17,6 +17,7 @@ import {
 import { localDate, previousDay } from "./daily/time.js";
 import { createDatabase } from "./db/index.js";
 import { dailySummaries, notesLog, processedUpdates, undoLog } from "./db/schema.js";
+import { healthReport } from "./health.js";
 import { HermesClient } from "./hermes/client.js";
 import { type Language, messages } from "./i18n/index.js";
 import { createLlmProxy } from "./llm/proxy.js";
@@ -127,6 +128,9 @@ async function main(): Promise<void> {
   /** The chat of the owner, the bot writes there. */
   const ownerChatId = [...config.telegram.allowedUserIds][0] ?? 0;
 
+  /** The moment of the last message that went through the pipeline. */
+  let lastMessageAt: number | null = null;
+
   /** The language of every user, kept in the database. */
   const languageStore = {
     db,
@@ -183,6 +187,7 @@ async function main(): Promise<void> {
           );
           await bot.api.sendMessage(chatId, statusWithConflicts(result, language));
           await record(result, userId);
+          lastMessageAt = Date.now();
         } catch (error) {
           logger.error("could not process the message", { error: String(error) });
           await bot.api.sendMessage(chatId, messages(language).errorWrite).catch(() => undefined);
@@ -219,6 +224,7 @@ async function main(): Promise<void> {
           );
           await bot.api.sendMessage(chatId, statusWithConflicts(result, language));
           await record(result, userId);
+          lastMessageAt = Date.now();
         } catch (error) {
           logger.error("could not save the file", { error: String(error) });
           await bot.api.sendMessage(chatId, messages(language).errorSave).catch(() => undefined);
@@ -328,8 +334,19 @@ async function main(): Promise<void> {
     }
 
     if (url.pathname === "/health") {
-      response.writeHead(200, { "content-type": "application/json" });
-      response.end(JSON.stringify({ ok: true, service: "telegram-to-obsidian-ai-agent" }));
+      // The answer is the state of the dependencies, not the fact that the
+      // process is alive: the container is restarted on a failed health check.
+      void healthReport({
+        db,
+        vault,
+        logger: logger.child("health"),
+        queueSize: () => queue.size,
+        lastMessageAt: () => lastMessageAt,
+        startedAt,
+      }).then((report) => {
+        response.writeHead(report.ok ? 200 : 503, { "content-type": "application/json" });
+        response.end(JSON.stringify(report));
+      });
       return;
     }
     void miniApp(request, response).then((handled) => {

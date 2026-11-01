@@ -1,6 +1,6 @@
 {
   "name": "@danii1kq/vault-mcp",
-  "version": "0.2.1",
+  "version": "0.3.0",
   "description": "The MCP server of an Obsidian vault with the writes that are safe for Syncthing",
   "license": "MIT",
   "author": "Daniil Li",

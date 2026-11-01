@@ -58,6 +58,18 @@ note:
 ![[2026-10-22_photo_abc.jpg]]
 ```
 
+### Voice messages
+
+A voice message is a thought said out loud, so it is turned into text before it
+becomes a note. The audio goes to the model through the same local proxy the
+agent uses, the answer is the text of the message, and that text goes through
+the ordinary pipeline: the note is found or created exactly as for a typed
+message, and the file stays in `attachments` with a link in the note.
+
+The transcription is off until `TRANSCRIBE_MODEL` names a model that accepts
+audio. When it is off, or when the model cannot read the audio, the file is
+still saved and the note still points at it, so the thought is never lost.
+
 ### Daily summaries
 
 Every day at midnight, in the time zone of the owner, the bot collects the

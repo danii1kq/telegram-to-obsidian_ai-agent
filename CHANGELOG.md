@@ -5,12 +5,60 @@ the project follows [Semantic Versioning](https://semver.org).
 
 ## [Unreleased]
 
+## [0.3.0] - 2026-11-02
+
+The release of the four things the bot was missing: a voice message is read,
+a conflict of Syncthing is reported, the health endpoint answers for the
+dependencies and the Mini App reaches the whole vault.
+
+### Added
+
+- A voice message and an audio file are transcribed into text and go through
+  the same pipeline as a typed message. The audio goes to the local proxy the
+  agent already uses, so the key of the provider never leaves the process.
+  `TRANSCRIBE_MODEL` turns it on; empty keeps the old behaviour, where the file
+  is saved and the note points at it.
+- The Mini App pages through the whole vault: the answer of the notes carries
+  the total and whether there is a next page, and the list asks for it with the
+  button under the last note.
+- The health endpoint answers for the database, the vault and the queue, with
+  200 when all three answer and 503 when one does not.
+
+### Fixed
+
+- A conflict copy of Syncthing was found by the guard and then dropped: the
+  owner was never told that another device wrote the same note at the same
+  time and that the other version holds words the note does not.
+- `/health` answered `ok: true` without asking anything, so a container whose
+  database was gone stayed healthy and was never restarted.
+- The health check of the vault called a scan that forgives an unreadable
+  folder, so a vault that was removed looked like an empty one.
+
+### Security
+
+- `@modelcontextprotocol/sdk` is updated and `body-parser` and `fast-uri` are
+  pinned through overrides: the audit of the production dependencies reports
+  no vulnerabilities.
+
 ### Changed
 
-- The title of the file of the month is in the language of the owner now:
+- The title of the file of the month is in the language of the owner:
   `October 2026` for the English user, `Октябрь 2026` for the Russian one.
 - The README is in English and the Russian version lives in `README-ru.md`,
   the two files link to each other at the top.
+- A search pattern is a plain text unless a regular expression is asked for
+  explicitly, and a pattern of the content search is never compiled by
+  default.
+- The webhook caps the body at one megabyte and never handles an update twice.
+- The texts of the bot follow the language of the owner everywhere: the button
+  of the Mini App, the name of a file without a caption, the units of the
+  uptime and of the size of the vault.
+- The vault is read side by side instead of one file after another: on a vault
+  of 500 notes the scan by tag went from 161 to 46 ms, the content search from
+  74 to 38 ms and the list of the Mini App from 35 to 21 ms.
+- The lock of the skills is committed, it is what restores them.
+- The linter config is current, two text keys that nothing read are gone, and
+  the ci builds the bot, the Mini App and the vault MCP package.
 
 ## [0.2.1] - 2026-10-22
 

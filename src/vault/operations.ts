@@ -62,7 +62,8 @@ export class VaultOperations {
 
   constructor(private readonly deps: VaultOperationsDeps) {}
 
-  private get vaultRoot(): string {
+  /** The absolute path of the vault root. */
+  get vaultRoot(): string {
     return this.deps.guard.vaultRoot;
   }
 

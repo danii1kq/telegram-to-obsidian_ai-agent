@@ -1,4 +1,4 @@
-import { mkdtemp } from "node:fs/promises";
+import { mkdir, mkdtemp, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { describe, expect, it } from "vitest";
@@ -13,6 +13,8 @@ const logger = createLogger("error", "test");
 async function makeWorld() {
   const root = await mkdtemp(path.join(tmpdir(), "health-"));
   const vaultPath = path.join(root, "vault");
+  // The vault folder exists in a real deployment: the bot creates it at start.
+  await mkdir(vaultPath, { recursive: true });
   const guard = new VaultGuard({ vaultRoot: vaultPath, settleDelayMs: 1, verifyDelayMs: 1 });
   const vault = new VaultOperations({
     guard,
@@ -61,6 +63,26 @@ describe("the health of the process", () => {
     expect(report.ok).toBe(false);
     expect(report.checks.database.ok).toBe(false);
     expect(report.checks.database.detail).toBeTruthy();
+  });
+
+  it("is not ok when the vault is gone", async () => {
+    const { vault, db, client } = await makeWorld();
+    // A vault that was removed or unmounted is not an empty vault.
+    await rm(vault.vaultRoot, { recursive: true, force: true });
+
+    const report = await healthReport({
+      db,
+      vault,
+      logger,
+      queueSize: () => 0,
+      lastMessageAt: () => null,
+      startedAt: Date.now(),
+    });
+
+    expect(report.ok).toBe(false);
+    expect(report.checks.vault.ok).toBe(false);
+    expect(report.checks.database.ok).toBe(true);
+    client.close();
   });
 
   it("is not ok when the queue is backing up", async () => {

@@ -1,3 +1,5 @@
+import { readdir } from "node:fs/promises";
+import { sql } from "drizzle-orm";
 import type { Database } from "./db/index.js";
 import type { Logger } from "./logger.js";
 import type { VaultOperations } from "./vault/operations.js";
@@ -44,23 +46,30 @@ export interface CheckResult {
 /** A message that waits longer than this is a queue that does not move. */
 const MAX_QUEUE_SIZE = 50;
 
-/** The database answers a trivial question. */
+/** The database answers a question about a real table. */
 async function checkDatabase(db: Database["db"]): Promise<CheckResult> {
   try {
-    // `select 1` through drizzle keeps the check on the same connection pool
-    // the rest of the process uses, so a pool that is stuck shows up here.
-    await db.run("select 1");
+    // `select 1` is answered by the engine without touching a file, so it stays
+    // green on a database whose file is gone. The question goes to a table the
+    // bot actually writes, which is what breaks when the file does.
+    await db.run(sql`select count(*) from notes_log`);
     return { ok: true };
   } catch (error) {
     return { ok: false, detail: error instanceof Error ? error.message : String(error) };
   }
 }
 
-/** The vault is readable: the folder exists and lists. */
+/**
+ * The vault is readable.
+ *
+ * `listNotes` swallows a folder it cannot read and answers with an empty list,
+ * which is right for a scan and wrong for a health check: a vault that is gone
+ * looks like an empty vault. The check reads the folder itself.
+ */
 async function checkVault(vault: VaultOperations): Promise<CheckResult> {
   try {
-    await vault.listNotes();
-    return { ok: true };
+    const entries = await readdir(vault.vaultRoot, { withFileTypes: true });
+    return { ok: true, detail: `${entries.length} entries` };
   } catch (error) {
     return { ok: false, detail: error instanceof Error ? error.message : String(error) };
   }

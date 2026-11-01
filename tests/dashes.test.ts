@@ -4,12 +4,7 @@ import path from "node:path";
 import { describe, expect, it } from "vitest";
 import { createLogger } from "../src/logger.js";
 import { VaultGuard } from "../src/vault/guard.js";
-import {
-  autoLinkEntities,
-  ensureFrontmatter,
-  normalizeDashes,
-  VaultOperations,
-} from "../src/vault/operations.js";
+import { normalizeDashes, VaultOperations } from "../src/vault/operations.js";
 import { sanitizeFileName } from "../src/vault/paths.js";
 
 const logger = createLogger("error", "test");

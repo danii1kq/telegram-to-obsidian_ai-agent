@@ -28,6 +28,24 @@ jobs:
       - name: Test
         run: npm test
 
+      - name: Build
+        run: npm run build
+
+      - name: The dependencies of the Mini App
+        run: npm ci --prefix web
+
+      - name: Type check of the Mini App
+        run: npx tsc --noEmit --project web
+
+      - name: Build of the Mini App
+        run: npm run build --prefix web
+
+      - name: The dependencies of the vault MCP package
+        run: npm ci --prefix packages/vault-mcp
+
+      - name: Build of the vault MCP package
+        run: npm run build --prefix packages/vault-mcp
+
   deploy:
     needs: check
     if: github.ref == 'refs/heads/main' && github.event_name == 'push'

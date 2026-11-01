@@ -19,7 +19,6 @@ export type Messages = {
   help: string;
   statusEmpty: string;
   statusHeader: string;
-  statusLines: string;
   statusRunning: (uptime: string) => string;
   statusModel: (model: string, fallback: string) => string;
   statusNotes: (count: number, inVault: number, size: string) => string;
@@ -88,7 +87,6 @@ const en: Messages = {
   ].join("\n"),
   statusEmpty: "Nothing has been written yet.",
   statusHeader: "The last notes:",
-  statusLines: "• {title} ({action})",
   statusRunning: (uptime) => `The bot is running for ${uptime}`,
   statusModel: (model, fallback) =>
     fallback ? `• Model: ${model} (reserve ${fallback})` : `• Model: ${model}`,
@@ -152,7 +150,6 @@ const ru: Messages = {
   ].join("\n"),
   statusEmpty: "Пока ничего не записано.",
   statusHeader: "Последние записи:",
-  statusLines: "• {title} ({action})",
   statusRunning: (uptime) => `Бот работает ${uptime}`,
   statusModel: (model, fallback) =>
     fallback ? `• Модель: ${model} (резерв ${fallback})` : `• Модель: ${model}`,

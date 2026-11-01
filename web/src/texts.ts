@@ -25,7 +25,6 @@ export type Texts = {
   retry: string;
   back: string;
   openErrorTitle: string;
-  fileTooBig: string;
 };
 
 const en: Texts = {
@@ -46,7 +45,6 @@ const en: Texts = {
   retry: "Try again",
   back: "Back",
   openErrorTitle: "Could not open",
-  fileTooBig: "The file is too big, the limit is 20 MB.",
 };
 
 const ru: Texts = {
@@ -67,7 +65,6 @@ const ru: Texts = {
   retry: "Повторить",
   back: "Назад",
   openErrorTitle: "Не удалось открыть",
-  fileTooBig: "Файл слишком большой, максимум 20 МБ.",
 };
 
 const CATALOGS: Record<Language, Texts> = { en, ru };

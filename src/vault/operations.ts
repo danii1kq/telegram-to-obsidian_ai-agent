@@ -39,6 +39,8 @@ const MAX_SCANNED_BYTES = 512 * 1024;
 const MAX_SEARCH_HITS = 60;
 /** How long a regular expression may take on a short sample before it is dropped. */
 const REGEX_SAMPLE_BUDGET_MS = 50;
+/** How long the titles of the notes are reused for the wiki links. */
+const TITLES_CACHE_MS = 2000;
 
 /** The long dashes that are never written into a note. */
 const LONG_DASHES = /[—–‒―]/g;
@@ -56,6 +58,8 @@ export function normalizeDashes(text: string): string {
  * application itself when the agent is not able to run.
  */
 export class VaultOperations {
+  private titlesCache: { titles: string[]; at: number } | null = null;
+
   constructor(private readonly deps: VaultOperationsDeps) {}
 
   private get vaultRoot(): string {
@@ -103,25 +107,46 @@ export class VaultOperations {
     return notes.map((note) => note.title);
   }
 
+  /**
+   * The titles for the wiki links, cached for a short while.
+   *
+   * Every write asks for the titles to link the mentions, and every ask walks
+   * the whole vault. The cache is short lived and is dropped by the writes of
+   * this process, so a note that appears is linked by the next message.
+   */
+  private async cachedTitles(): Promise<string[]> {
+    const now = Date.now();
+    if (this.titlesCache && now - this.titlesCache.at < TITLES_CACHE_MS) {
+      return this.titlesCache.titles;
+    }
+    const titles = await this.noteTitles();
+    this.titlesCache = { titles, at: now };
+    return titles;
+  }
+
+  /** Drops the cache of the titles, the vault has a new note. */
+  private invalidateTitles(): void {
+    this.titlesCache = null;
+  }
+
   /** The notes with their date, their tags and a short text. */
   async listNotesDetailed(limit = 60): Promise<DetailedNote[]> {
     const notes = await this.listNotes();
-    const detailed: DetailedNote[] = [];
 
-    for (const note of notes.slice(0, limit)) {
-      const info = await stat(path.join(this.vaultRoot, note.relativePath)).catch(() => null);
-      const content =
-        info && info.size > MAX_SCANNED_BYTES
-          ? ""
-          : await readFile(path.join(this.vaultRoot, note.relativePath), "utf8").catch(() => "");
-      const fields = parseFrontmatter(content);
-      detailed.push({
-        ...note,
-        date: fields.date ?? "",
-        tags: parseTags(content),
-        snippet: excerptOf(content),
-      });
-    }
+    // The notes are read side by side: a vault of a few hundred notes is a few
+    // hundred independent reads, and one after another they add up.
+    const detailed = await Promise.all(
+      notes.slice(0, limit).map(async (note) => {
+        const content = await this.readScanned(note);
+        const fields = parseFrontmatter(content);
+        return {
+          ...note,
+          date: fields.date ?? "",
+          tags: parseTags(content),
+          snippet: excerptOf(content),
+        };
+      }),
+    );
     return detailed;
   }
 
@@ -165,10 +190,12 @@ export class VaultOperations {
     const contentMatcher = buildContentMatcher(pattern, params.regex === true);
     for (const note of notes) {
       if (glob && !matchesGlob(note.relativePath, glob)) continue;
-      const full = path.join(this.vaultRoot, note.relativePath);
-      const info = await stat(full).catch(() => null);
-      if (!info || info.size > MAX_SCANNED_BYTES) continue;
-      const content = await readFile(full, "utf8").catch(() => "");
+      // The size is already known from the listing, so a note that is too big
+      // to scan is not read at all.
+      if (note.size > MAX_SCANNED_BYTES) continue;
+      const content = await readFile(path.join(this.vaultRoot, note.relativePath), "utf8").catch(
+        () => "",
+      );
       const lines = content.split("\n");
       for (let index = 0; index < lines.length; index += 1) {
         const line = lines[index] ?? "";
@@ -223,7 +250,7 @@ export class VaultOperations {
     options: { source?: VaultEvent["source"]; autoLink?: boolean } = {},
   ): Promise<WriteResult> {
     const absolute = resolveInsideVault(this.vaultRoot, targetPath);
-    const titles = options.autoLink === false ? [] : await this.noteTitles();
+    const titles = options.autoLink === false ? [] : await this.cachedTitles();
     const selfTitle = path.basename(absolute).replace(/\.md$/i, "");
     const linked = autoLinkEntities(normalizeDashes(content), titles, selfTitle);
     const withFrontmatter = ensureFrontmatter(linked, this.currentDate());
@@ -232,6 +259,7 @@ export class VaultOperations {
     const previous = await readFile(absolute, "utf8").catch(() => undefined);
 
     const result = await this.deps.guard.write(absolute, withFrontmatter);
+    this.invalidateTitles();
     await this.record(result, options.source ?? "agent", {
       previous: result.action === "overwrite" ? previous : undefined,
     });
@@ -286,15 +314,26 @@ export class VaultOperations {
     if (!wanted) return [];
 
     const notes = await this.listNotes();
-    const matched: NoteInfo[] = [];
-    for (const note of notes) {
-      const content = await readFile(path.join(this.vaultRoot, note.relativePath), "utf8").catch(
-        () => "",
-      );
-      const tags = parseTags(content).map((value) => value.toLowerCase());
-      if (tags.includes(wanted)) matched.push(note);
-    }
-    return matched;
+    const matched = await Promise.all(
+      notes.map(async (note) => {
+        const content = await this.readScanned(note);
+        const tags = parseTags(content).map((value) => value.toLowerCase());
+        return tags.includes(wanted) ? note : null;
+      }),
+    );
+    return matched.filter((note): note is NoteInfo => note !== null);
+  }
+
+  /**
+   * Reads a note for a scan over the whole vault.
+   *
+   * The size of a note is already known from the listing, so a note that is
+   * too big to scan is not read at all. A note that disappeared between the
+   * listing and the read gives an empty text instead of failing the scan.
+   */
+  private async readScanned(note: NoteInfo): Promise<string> {
+    if (note.size > MAX_SCANNED_BYTES) return "";
+    return readFile(path.join(this.vaultRoot, note.relativePath), "utf8").catch(() => "");
   }
 
   /** Creates a note from a title, used by the fallback path. */
@@ -417,6 +456,7 @@ function buildMatcher(pattern: string): (value: string) => boolean {
  * nested quantifiers can backtrack for minutes on a single line.
  */
 function buildContentMatcher(pattern: string, regex: boolean): (line: string) => boolean {
+  // The needle is lowered once, not once per line: a vault has a lot of lines.
   const needle = pattern.toLowerCase();
   const plain = (line: string) => line.toLowerCase().includes(needle);
   if (!regex) return plain;

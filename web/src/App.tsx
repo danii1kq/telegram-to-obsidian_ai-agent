@@ -99,19 +99,29 @@ export default function App() {
     });
   }, []);
 
-  // The search waits for a pause in the typing.
+  // The search waits for a pause in the typing. A slow answer for an older
+  // query must not overwrite the hits of the query the owner sees now, so the
+  // effect cleans up after itself and only the last query lands.
   useEffect(() => {
     const trimmed = query.trim();
     if (!trimmed) {
       setHits([]);
       return;
     }
+    let cancelled = false;
     const timer = setTimeout(() => {
       searchNotes(trimmed)
-        .then(setHits)
-        .catch(() => setHits([]));
+        .then((result) => {
+          if (!cancelled) setHits(result);
+        })
+        .catch(() => {
+          if (!cancelled) setHits([]);
+        });
     }, 250);
-    return () => clearTimeout(timer);
+    return () => {
+      cancelled = true;
+      clearTimeout(timer);
+    };
   }, [query]);
 
   // The back button of Telegram leads back to the list.

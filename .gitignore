@@ -91,3 +91,5 @@ temp/
 # Снимок хранилища с VDS и разовые скрипты для сервера: это не часть проекта.
 vds-vault-backup-*/
 add-key.ps1
+commit.mjs
+commit-msg.txt

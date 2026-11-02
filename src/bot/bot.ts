@@ -2,7 +2,7 @@ import { Bot, type Context, InlineKeyboard } from "grammy";
 import type { AppConfig } from "../config.js";
 import { isLanguage, LANGUAGE_NAMES, type Language, messages } from "../i18n/index.js";
 import type { Logger } from "../logger.js";
-import { AttachmentTooBigError, describeAttachment, downloadAttachment } from "./attachments.js";
+import { describeAttachment } from "./attachments.js";
 
 export interface BotDeps {
   config: AppConfig;
@@ -26,7 +26,8 @@ export interface BotDeps {
   /** Saves a file of the owner and writes a note about it. */
   onAttachment: (input: {
     caption: string;
-    file: { name: string; data: Uint8Array };
+    /** The file to download inside the queue, so the bytes are not held early. */
+    file: { name: string; fileId: string };
     userId: number;
     chatId: number;
     language: Language;
@@ -158,35 +159,18 @@ export function createBot(deps: BotDeps): Bot {
     const caption = ctx.message?.caption?.trim() ?? "";
     const language = await deps.getLanguage(userId);
 
-    try {
-      const data = await downloadAttachment(bot, config.telegram.botToken, attachment.fileId);
-      await deps.onAttachment({
-        caption,
-        file: { name: attachment.fileName, data },
-        userId,
-        chatId,
-        language,
-        // A voice message and an audio file carry speech, a document does not.
-        audio: Boolean(ctx.message?.voice ?? ctx.message?.audio),
-      });
-    } catch (error) {
-      // The limit is the only failure the owner can do something about, so it
-      // is the only one that gets the message about the size.
-      if (error instanceof AttachmentTooBigError) {
-        logger.warn("a file of the owner is over the limit", {
-          fileName: attachment.fileName,
-          bytes: error.bytes,
-          limit: error.limit,
-        });
-        await ctx.reply(messages(language).fileTooBig("20 MB")).catch(() => undefined);
-        return;
-      }
-      logger.error("could not save the file", {
-        error: String(error),
-        fileName: attachment.fileName,
-      });
-      await ctx.reply(messages(language).errorSave).catch(() => undefined);
-    }
+    // The download waits for the queue together with the write. A file is up to
+    // twenty megabytes, and downloading it right away would put several of them
+    // in memory at once while the pipeline is still busy with the first one.
+    await deps.onAttachment({
+      caption,
+      file: { name: attachment.fileName, fileId: attachment.fileId },
+      userId,
+      chatId,
+      language,
+      // A voice message and an audio file carry speech, a document does not.
+      audio: Boolean(ctx.message?.voice ?? ctx.message?.audio),
+    });
   };
 
   bot.on("message:document", handleFile);

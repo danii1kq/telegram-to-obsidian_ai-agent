@@ -4,6 +4,7 @@ import path from "node:path";
 import { desc } from "drizzle-orm";
 import { type Bot, InlineKeyboard } from "grammy";
 import { buildStatus, listInbox, searchNotes, undoLast } from "./bot/actions.js";
+import { AttachmentTooBigError, downloadAttachment } from "./bot/attachments.js";
 import { createBot } from "./bot/bot.js";
 import { MessageQueue } from "./bot/queue.js";
 import { loadConfig } from "./config.js";
@@ -197,10 +198,13 @@ async function main(): Promise<void> {
     onAttachment: async ({ caption, file, userId, chatId, language, audio }) => {
       queue.push(async () => {
         try {
+          // The download happens here, inside the queue, so a burst of files
+          // does not put several of them in memory at once.
+          const data = await downloadAttachment(bot, config.telegram.botToken, file.fileId);
           const saved = await saveAttachment(
             config.vault.path,
             file.name,
-            file.data,
+            data,
             vault.currentDate(),
           );
           logger.info("saved a file of the owner", {
@@ -212,7 +216,7 @@ async function main(): Promise<void> {
           // text and goes through the same pipeline as a typed message. When
           // the transcription is off or fails, the file is still saved and the
           // note points at it, so nothing is lost.
-          const spoken = audio ? await transcribe(file.data, file.name) : "";
+          const spoken = audio ? await transcribe(data, file.name) : "";
           const text =
             spoken || caption.trim() || messages(language).attachmentFallback(saved.name);
 
@@ -226,7 +230,20 @@ async function main(): Promise<void> {
           await record(result, userId);
           lastMessageAt = Date.now();
         } catch (error) {
-          logger.error("could not save the file", { error: String(error) });
+          // The limit is the only failure the owner can do something about, so
+          // it is the only one that gets the message about the size.
+          if (error instanceof AttachmentTooBigError) {
+            logger.warn("a file of the owner is over the limit", {
+              fileName: file.name,
+              bytes: error.bytes,
+              limit: error.limit,
+            });
+            await bot.api
+              .sendMessage(chatId, messages(language).fileTooBig("20 MB"))
+              .catch(() => undefined);
+            return;
+          }
+          logger.error("could not save the file", { error: String(error), fileName: file.name });
           await bot.api.sendMessage(chatId, messages(language).errorSave).catch(() => undefined);
         }
       });

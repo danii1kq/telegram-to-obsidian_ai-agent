@@ -9,11 +9,27 @@ import type { Logger } from "../logger.js";
 export class MessageQueue {
   private readonly pending: Array<() => Promise<void>> = [];
   private running = false;
+  private readonly limit: number;
 
-  constructor(private readonly logger: Logger) {}
+  constructor(
+    private readonly logger: Logger,
+    options: { limit?: number } = {},
+  ) {
+    this.limit = options.limit ?? 100;
+  }
 
-  /** Adds a job to the queue and waits until it is done. */
+  /**
+   * Adds a job to the queue and waits until it is done.
+   *
+   * A job that arrives when the queue is already long is dropped: the owner
+   * sends messages from one phone, so a queue of a hundred means something is
+   * stuck, and piling more work on top would only grow the memory.
+   */
   push(job: () => Promise<void>): Promise<void> {
+    if (this.pending.length >= this.limit) {
+      this.logger.warn("the queue is full, the job is dropped", { size: this.pending.length });
+      return Promise.resolve();
+    }
     return new Promise<void>((resolve) => {
       this.pending.push(async () => {
         try {

@@ -147,12 +147,6 @@ export async function runDailySummary(
   return { day, file, summary, notesCount: notes.length };
 }
 
-/** The summary of yesterday, the day the owner would want to read. */
-export async function runDailySummaryForYesterday(deps: DailyDeps): Promise<DailySummary | null> {
-  const today = localDate(new Date(), deps.config.vault.timeZone);
-  return runDailySummary(deps, previousDay(today));
-}
-
 /**
  * Makes the summaries that are missing after a restart.
  *

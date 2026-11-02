@@ -64,6 +64,11 @@ export async function processMessage(
     userId: telegramUserId,
     tags,
   });
+  // The log is shared, so the writes of this message are the ones that appear
+  // after the marker: a note written a second ago by another job (a summary, a
+  // prepared note) is not the answer of this message.
+  const before = await readEvents(deps.config.vault.eventsFile);
+  const marker = before.at(-1);
   const run = await deps.hermes.run(prompt);
   deps.logger.info("the agent finished", {
     ok: run.ok,
@@ -73,7 +78,7 @@ export async function processMessage(
   });
 
   const events = await readEvents(deps.config.vault.eventsFile);
-  const fresh = events.filter((event) => Date.parse(event.at) >= startedAt - 1500);
+  const fresh = eventsAfter(events, marker, startedAt);
 
   if (fresh.length > 0) {
     const last = fresh[fresh.length - 1] as VaultEvent;
@@ -202,7 +207,14 @@ async function conflictsOf(vault: VaultOperations, relativePath: string): Promis
   return vault.conflictCopies(relativePath).catch(() => []);
 }
 
-/** Looks for a note that is about the same topic as the message. */
+/**
+ * Looks for a note that is about the same topic as the message.
+ *
+ * The search is a substring match, so a keyword like `work` hits `Workout
+ * plan` as well as `Work meeting`. Taking the first hit would append a note
+ * about a meeting to a note about the gym, so every note is scored by how many
+ * of the keywords its title holds and by how much of the title they cover.
+ */
 async function findRelatedNote(
   text: string,
   title: string,
@@ -211,18 +223,36 @@ async function findRelatedNote(
   const keywords = extractKeywords(text);
   if (keywords.length === 0) return null;
 
+  const scored = new Map<string, number>();
   for (const keyword of keywords) {
     const hits = await vault.searchFiles({ target: "files", pattern: keyword });
-    if (hits.length > 0) {
-      return (hits[0] as { relativePath: string }).relativePath;
+    for (const hit of hits) {
+      const noteTitle = hit.title.toLowerCase();
+      // A word that is only a part of a longer word counts for less than a
+      // word that stands on its own.
+      const whole = new RegExp(`(^|[^\\p{L}\\p{N}])${escapeRegExp(keyword)}([^\\p{L}\\p{N}]|$)`, "u");
+      const weight = whole.test(noteTitle) ? 2 : 1;
+      scored.set(hit.relativePath, (scored.get(hit.relativePath) ?? 0) + weight);
     }
   }
+
+  let best: { path: string; score: number } | null = null;
+  for (const [notePath, score] of scored) {
+    if (!best || score > best.score) best = { path: notePath, score };
+  }
+  // One keyword that only matched as a part of another word is not a topic.
+  if (best && best.score >= 2) return best.path;
 
   const exact = await vault.searchFiles({ target: "files", pattern: title });
   if (exact.length > 0) {
     return (exact[0] as { relativePath: string }).relativePath;
   }
   return null;
+}
+
+/** Escapes a string so it can be put into a regular expression. */
+function escapeRegExp(value: string): string {
+  return value.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
 }
 
 /** Builds a short title out of the message. */
@@ -286,6 +316,28 @@ export function extractKeywords(text: string): string[] {
         .filter((word) => word.length > 3 && !stop.has(word)),
     ),
   ].slice(0, 6);
+}
+
+/**
+ * The events that were added to the log after the marker.
+ *
+ * The marker is compared by its fields, not by identity: it comes from an
+ * earlier read of the file, so it is a different object with the same content.
+ * The log is capped, so the marker may be gone by the time the agent is done;
+ * then the time of the start is the only hint, and it is used with a margin.
+ */
+function eventsAfter(
+  events: VaultEvent[],
+  marker: VaultEvent | undefined,
+  startedAt: number,
+): VaultEvent[] {
+  if (marker) {
+    const index = events.findLastIndex(
+      (event) => event.at === marker.at && event.path === marker.path && event.action === marker.action,
+    );
+    if (index >= 0) return events.slice(index + 1);
+  }
+  return events.filter((event) => Date.parse(event.at) >= startedAt - 1500);
 }
 
 /** The status line of a write, in the language of the owner. */ function statusFor(

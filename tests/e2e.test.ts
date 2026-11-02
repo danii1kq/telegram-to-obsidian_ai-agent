@@ -123,4 +123,59 @@ describe("the chain of a message", () => {
 
     client.close();
   });
+
+  it("appends to the note of the topic, not to the first note that shares a word", async () => {
+    const root = await mkdtemp(path.join(tmpdir(), "e2e-"));
+    const vaultPath = path.join(root, "vault");
+
+    const guard = new VaultGuard({ vaultRoot: vaultPath, settleDelayMs: 1, verifyDelayMs: 1 });
+    const vault = new VaultOperations({
+      guard,
+      eventsFile: path.join(root, "events.json"),
+      timeZone: "Asia/Almaty",
+      logger,
+    });
+    const { client } = await createDatabase(path.join(root, "app.db"));
+
+    // "Workout plan" holds the word "work" as a part of a longer word, so a
+    // search for "work" finds it as well as "Work meeting".
+    await vault.createNoteFromTitle("Workout plan", "gym twice a week", "agent");
+    await vault.createNoteFromTitle("Work meeting", "the team meets on monday", "agent");
+
+    const hermes = {
+      run: async () => ({
+        ok: false,
+        text: "",
+        error: "the model is not available",
+        durationMs: 10,
+        model: "test",
+        usedFallback: false,
+        stderr: "",
+      }),
+    } as unknown as HermesClient;
+
+    const config = {
+      vault: {
+        path: vaultPath,
+        timeZone: "Asia/Almaty",
+        eventsFile: path.join(root, "events.json"),
+      },
+      hermes: { model: "test" },
+    } as unknown as Parameters<typeof processMessage>[2]["config"];
+
+    const result = await processMessage("work meeting about the plan", 1, {
+      config,
+      hermes,
+      vault,
+      logger,
+    });
+
+    expect(result.usedFallback).toBe(true);
+    expect(result.path).toBe("Work meeting.md");
+
+    const workout = await readFile(path.join(vaultPath, "Workout plan.md"), "utf8");
+    expect(workout).not.toContain("work meeting about the plan");
+
+    client.close();
+  });
 });

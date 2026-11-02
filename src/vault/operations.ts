@@ -37,6 +37,8 @@ export interface VaultOperationsDeps {
 
 const MAX_SCANNED_BYTES = 512 * 1024;
 const MAX_SEARCH_HITS = 60;
+/** How many notes are read at once by a search. */
+const READ_CONCURRENCY = 16;
 /** How long a regular expression may take on a short sample before it is dropped. */
 const REGEX_SAMPLE_BUDGET_MS = 50;
 /** How long the titles of the notes are reused for the wiki links. */
@@ -189,14 +191,22 @@ export class VaultOperations {
     }
 
     const contentMatcher = buildContentMatcher(pattern, params.regex === true);
-    for (const note of notes) {
-      if (glob && !matchesGlob(note.relativePath, glob)) continue;
+    const candidates = notes
+      .filter((note) => !glob || matchesGlob(note.relativePath, glob))
       // The size is already known from the listing, so a note that is too big
       // to scan is not read at all.
-      if (note.size > MAX_SCANNED_BYTES) continue;
-      const content = await readFile(path.join(this.vaultRoot, note.relativePath), "utf8").catch(
-        () => "",
-      );
+      .filter((note) => note.size <= MAX_SCANNED_BYTES);
+
+    // The notes are read side by side, a few at a time. One read after another
+    // spends most of the time waiting for the disk, and a vault of a thousand
+    // notes took a third of a second to answer a search.
+    const contents = await mapWithLimit(candidates, READ_CONCURRENCY, (note) =>
+      readFile(path.join(this.vaultRoot, note.relativePath), "utf8").catch(() => ""),
+    );
+
+    for (let at = 0; at < candidates.length; at += 1) {
+      const note = candidates[at] as NoteInfo;
+      const content = contents[at] ?? "";
       const lines = content.split("\n");
       for (let index = 0; index < lines.length; index += 1) {
         const line = lines[index] ?? "";
@@ -558,4 +568,31 @@ function matchesWithQuestionMarks(value: string, piece: string): boolean {
 function matchesGlob(value: string, glob: string): boolean {
   const matcher = compileGlob(glob);
   return matcher(path.basename(value)) || matcher(value);
+}
+
+/**
+ * Runs a task over the items, a few at a time, and keeps the order.
+ *
+ * A read after another waits for the disk on every file; a thousand reads at
+ * once would open a thousand handles. The limit is the middle ground.
+ */
+async function mapWithLimit<T, R>(
+  items: T[],
+  limit: number,
+  task: (item: T) => Promise<R>,
+): Promise<R[]> {
+  const results = new Array<R>(items.length);
+  let next = 0;
+
+  const worker = async (): Promise<void> => {
+    for (;;) {
+      const index = next;
+      next += 1;
+      if (index >= items.length) return;
+      results[index] = await task(items[index] as T);
+    }
+  };
+
+  await Promise.all(Array.from({ length: Math.min(limit, items.length) }, worker));
+  return results;
 }

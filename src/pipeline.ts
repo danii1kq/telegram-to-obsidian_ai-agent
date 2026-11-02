@@ -230,7 +230,10 @@ async function findRelatedNote(
       const noteTitle = hit.title.toLowerCase();
       // A word that is only a part of a longer word counts for less than a
       // word that stands on its own.
-      const whole = new RegExp(`(^|[^\\p{L}\\p{N}])${escapeRegExp(keyword)}([^\\p{L}\\p{N}]|$)`, "u");
+      const whole = new RegExp(
+        `(^|[^\\p{L}\\p{N}])${escapeRegExp(keyword)}([^\\p{L}\\p{N}]|$)`,
+        "u",
+      );
       const weight = whole.test(noteTitle) ? 2 : 1;
       scored.set(hit.relativePath, (scored.get(hit.relativePath) ?? 0) + weight);
     }
@@ -333,7 +336,8 @@ function eventsAfter(
 ): VaultEvent[] {
   if (marker) {
     const index = events.findLastIndex(
-      (event) => event.at === marker.at && event.path === marker.path && event.action === marker.action,
+      (event) =>
+        event.at === marker.at && event.path === marker.path && event.action === marker.action,
     );
     if (index >= 0) return events.slice(index + 1);
   }

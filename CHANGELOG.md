@@ -5,6 +5,43 @@ the project follows [Semantic Versioning](https://semver.org).
 
 ## [Unreleased]
 
+## [0.3.1] - 2026-11-02
+
+The release of the defects the previous one left behind: a search could stop the
+whole bot, a file was downloaded outside the queue, and a message could land in
+the wrong note.
+
+### Fixed
+
+- A glob of a file name was compiled into a regular expression, so a pattern
+  like `*a*a*a*a*a*a*a*a*a*a*a*a*a*a*a*a*b` became `.*a.*a...b`. That
+  expression backtracks: on a name of 120 characters it did not answer in two
+  minutes, and the search of the Mini App takes the pattern from the address,
+  so one request could stop the process. The glob is a linear scan now.
+- A file of the owner was downloaded before its job reached the queue, so a
+  burst of files put several of them in memory at once while the pipeline was
+  still busy with the first one. The download waits for the queue now, and the
+  queue itself is capped at a hundred jobs.
+- A message was appended to the first note that shared a word with it, and the
+  search is a substring match: a message about a meeting went into the note
+  about the gym, because `work` is a part of `Workout`. Every note is scored by
+  how many keywords its title holds and by whether they stand on their own.
+- The pipeline decided which write belonged to the message by the time of the
+  write, so a note written a moment earlier by another job was reported to the
+  owner as the answer of this message. The log is read before the agent runs,
+  and only the events after that marker count.
+
+### Changed
+
+- The content search reads the notes side by side, sixteen at a time. On a vault
+  of 800 notes a search went from 383 to 151 ms.
+- The dependencies are current and the audit reports no vulnerabilities: biome
+  2.6.4, types 26.6.6, dotenv 18.0.9, vitest 5.1.0.
+- The formatter of the markdown is off: the new biome broke the tables of the
+  readmes into one cell per line, and the readmes are documentation, not code.
+- The unused `runDailySummaryForYesterday` helper is gone.
+- Two skills are in the lock: `vitest` and `security-and-hardening`.
+
 ## [0.3.0] - 2026-11-02
 
 The release of the four things the bot was missing: a voice message is read,

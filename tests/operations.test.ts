@@ -96,6 +96,46 @@ describe("VaultOperations", () => {
     expect(hits).toHaveLength(0);
   });
 
+  it("answers a glob with many stars without backtracking", async () => {
+    const { operations } = await makeOperations();
+    await operations.writeNote("Health.md", "running every morning");
+
+    // As a regular expression this is `.*a.*a...b`, which backtracks: on a name
+    // of 120 characters it does not answer in minutes, and the search of the
+    // Mini App would stop the process.
+    const startedAt = Date.now();
+    const hits = await operations.searchFiles({
+      target: "files",
+      pattern: "a",
+      file_glob: "*a*a*a*a*a*a*a*a*a*a*a*a*a*a*a*a*b",
+    });
+    expect(Date.now() - startedAt).toBeLessThan(2000);
+    expect(hits).toHaveLength(0);
+  });
+
+  it("matches a glob the way a shell does", async () => {
+    const { operations } = await makeOperations();
+    await operations.writeNote("Health.md", "running every morning");
+    await operations.writeNote("Business.md", "money and products");
+
+    const all = await operations.searchFiles({ target: "files", pattern: "md", file_glob: "*.md" });
+    expect(all).toHaveLength(2);
+
+    const one = await operations.searchFiles({
+      target: "files",
+      pattern: "md",
+      file_glob: "H?alth.md",
+    });
+    expect(one.map((hit) => hit.title)).toEqual(["Health"]);
+
+    const none = await operations.searchFiles({
+      target: "files",
+      pattern: "md",
+      file_glob: "*.txt",
+    });
+    expect(none).toHaveLength(0);
+  });
+
   it("uses a regular expression only when it is asked for", async () => {
     const { operations } = await makeOperations();
     await operations.writeNote("Health.md", "running every morning");

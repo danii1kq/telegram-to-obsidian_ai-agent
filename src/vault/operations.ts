@@ -459,8 +459,8 @@ export function excerptOf(content: string, maxLength = 180): string {
 /** Builds a matcher for file names: a glob when the pattern has wildcards. */
 function buildMatcher(pattern: string): (value: string) => boolean {
   if (hasGlob(pattern)) {
-    const regex = globToRegExp(pattern);
-    return (value) => regex.test(value);
+    const glob = compileGlob(pattern);
+    return (value) => glob(value);
   }
   const needle = pattern.toLowerCase();
   return (value) => value.toLowerCase().includes(needle);
@@ -504,12 +504,58 @@ function hasGlob(pattern: string): boolean {
   return /[*?]/.test(pattern);
 }
 
-function globToRegExp(pattern: string): RegExp {
-  const escaped = pattern.replace(/[.+^${}()|[\]\\]/g, "\\$&");
-  const withStars = escaped.replace(/\*/g, ".*").replace(/\?/g, ".");
-  return new RegExp(`^${withStars}$`, "i");
+/**
+ * Compiles a glob into a matcher.
+ *
+ * A glob is turned into a scan instead of a regular expression on purpose.
+ * `*a*a*a*a*a*a*a*a*a*a*a*a*a*a*a*b` becomes `.*a.*a...b`, and that expression
+ * backtracks: on a name of 120 characters it does not answer in minutes, so a
+ * search typed into the Mini App could stop the whole process. The scan below
+ * walks the name once per star and always answers in linear time.
+ */
+function compileGlob(pattern: string): (value: string) => boolean {
+  const parts = pattern.toLowerCase().split("*");
+  // A pattern without a star is a plain comparison, `?` aside.
+  if (parts.length === 1) {
+    const single = parts[0] ?? "";
+    return (value) => matchesWithQuestionMarks(value.toLowerCase(), single);
+  }
+
+  const head = parts[0] ?? "";
+  const tail = parts[parts.length - 1] ?? "";
+  const middle = parts.slice(1, -1);
+
+  return (value) => {
+    const text = value.toLowerCase();
+    // The head has to be there first, the tail has to be there last, and the
+    // pieces between the stars have to appear in order.
+    if (!matchesWithQuestionMarks(text.slice(0, head.length), head)) return false;
+    let rest = text.slice(head.length);
+    if (tail.length > 0) {
+      if (rest.length < tail.length) return false;
+      if (!matchesWithQuestionMarks(rest.slice(-tail.length), tail)) return false;
+      rest = rest.slice(0, -tail.length);
+    }
+    for (const piece of middle) {
+      if (piece === "") continue;
+      const at = rest.indexOf(piece);
+      if (at === -1) return false;
+      rest = rest.slice(at + piece.length);
+    }
+    return true;
+  };
+}
+
+/** Matches one piece of a glob, where `?` stands for a single character. */
+function matchesWithQuestionMarks(value: string, piece: string): boolean {
+  if (value.length !== piece.length) return false;
+  for (let index = 0; index < piece.length; index += 1) {
+    if (piece[index] !== "?" && piece[index] !== value[index]) return false;
+  }
+  return true;
 }
 
 function matchesGlob(value: string, glob: string): boolean {
-  return globToRegExp(glob).test(path.basename(value)) || globToRegExp(glob).test(value);
+  const matcher = compileGlob(glob);
+  return matcher(path.basename(value)) || matcher(value);
 }

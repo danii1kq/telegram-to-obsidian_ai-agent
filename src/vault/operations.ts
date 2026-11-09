@@ -37,6 +37,8 @@ export interface VaultOperationsDeps {
 
 const MAX_SCANNED_BYTES = 512 * 1024;
 const MAX_SEARCH_HITS = 60;
+/** The biggest page the list may ask for. */
+const MAX_PAGE = 200;
 /** How many notes are read at once by a search. */
 const READ_CONCURRENCY = 16;
 /** How long the titles of the notes are reused for the wiki links. */
@@ -134,6 +136,47 @@ export class VaultOperations {
     this.titlesCache = null;
   }
 
+  /**
+   * One page of the list, with the total and whether there is more.
+   *
+   * The listing is a snapshot: the vault is walked once, the window is cut out
+   * of it, and only the notes of that window are read from the disk. The old
+   * code read every note up to the end of the window and then threw the first
+   * page away, so the cost of a page grew with the page number.
+   */
+  async listNotesWindow(options: {
+    offset: number;
+    limit: number;
+  }): Promise<{ notes: DetailedNote[]; total: number; hasMore: boolean }> {
+    const offset = Number.isFinite(options.offset) ? Math.max(0, Math.trunc(options.offset)) : 0;
+    const limit = Number.isFinite(options.limit)
+      ? Math.min(MAX_PAGE, Math.max(1, Math.trunc(options.limit)))
+      : MAX_PAGE;
+
+    const all = await this.listNotes();
+    const window = all.slice(offset, offset + limit);
+
+    // Only the window is read, a few notes at a time: a page of two hundred
+    // notes is two hundred independent reads, and all of them at once would
+    // open as many handles.
+    const notes = await mapWithLimit(window, READ_CONCURRENCY, async (note) => {
+      const content = await this.readScanned(note);
+      const fields = parseFrontmatter(content);
+      return {
+        ...note,
+        date: fields.date ?? "",
+        tags: parseTags(content),
+        snippet: excerptOf(content),
+      };
+    });
+
+    return {
+      notes,
+      total: all.length,
+      hasMore: offset + window.length < all.length,
+    };
+  }
+
   /** The notes with their date, their tags and a short text. */
   async listNotesDetailed(limit = 60): Promise<DetailedNote[]> {
     const notes = await this.listNotes();
@@ -199,30 +242,42 @@ export class VaultOperations {
       // to scan is not read at all.
       .filter((note) => note.size <= MAX_SCANNED_BYTES);
 
-    // The notes are read side by side, a few at a time. One read after another
-    // spends most of the time waiting for the disk, and a vault of a thousand
-    // notes took a third of a second to answer a search.
-    const contents = await mapWithLimit(candidates, READ_CONCURRENCY, (note) =>
-      readFile(path.join(this.vaultRoot, note.relativePath), "utf8").catch(() => ""),
-    );
+    // The notes are read a few at a time and each text is dropped as soon as
+    // it has been looked at. Holding every text of the vault in one array and
+    // then walking it is what made a big vault take memory for nothing: the
+    // search stops at the first MAX_SEARCH_HITS hits, so most of those texts
+    // were read only to be thrown away.
+    let next = 0;
 
-    for (let at = 0; at < candidates.length; at += 1) {
-      const note = candidates[at] as NoteInfo;
-      const content = contents[at] ?? "";
-      const lines = content.split("\n");
-      for (let index = 0; index < lines.length; index += 1) {
-        const line = lines[index] ?? "";
-        if (contentMatcher(line)) {
+    const worker = async (): Promise<void> => {
+      for (;;) {
+        if (hits.length >= MAX_SEARCH_HITS) return;
+        const index = next;
+        next += 1;
+        if (index >= candidates.length) return;
+
+        const note = candidates[index] as NoteInfo;
+        const content = await readFile(path.join(this.vaultRoot, note.relativePath), "utf8").catch(
+          () => "",
+        );
+        const lines = content.split("\n");
+        for (let line = 0; line < lines.length; line += 1) {
+          const text = lines[line] ?? "";
+          if (!contentMatcher(text)) continue;
           hits.push({
             relativePath: note.relativePath,
             title: note.title,
-            line: index + 1,
-            snippet: line.trim().slice(0, 240),
+            line: line + 1,
+            snippet: text.trim().slice(0, 240),
           });
-          if (hits.length >= MAX_SEARCH_HITS) return hits;
+          if (hits.length >= MAX_SEARCH_HITS) return;
         }
       }
-    }
+    };
+
+    await Promise.all(
+      Array.from({ length: Math.min(READ_CONCURRENCY, candidates.length) }, () => worker()),
+    );
     return hits;
   }
 

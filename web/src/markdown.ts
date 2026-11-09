@@ -29,7 +29,7 @@ const ALLOWED_TAGS = [
   "span",
 ];
 
-const ALLOWED_ATTR = ["href", "src", "alt", "class", "title"];
+const ALLOWED_ATTR = ["href", "src", "alt", "class", "title", "loading"];
 
 const IMAGE_EXTENSIONS = [".jpg", ".jpeg", ".png", ".gif", ".webp", ".bmp", ".heic"];
 
@@ -58,6 +58,9 @@ function renderInline(text: string): string {
           // mark. Returning the tag itself put it into the text that is
           // escaped next, so the tag arrived at the sanitizer as `&lt;img&gt;`
           // and the note showed the markup instead of the picture.
+          //
+          // The name is only a name: the address is built here, so a name that
+          // looks like a scheme is a file name and nothing else.
           const url = `/api/file?path=${encodeURIComponent(`attachments/${name}`)}`;
           const html = `<img src="${url}" alt="${escapeHtml(name)}" loading="lazy" />`;
           placeholders.push(html);

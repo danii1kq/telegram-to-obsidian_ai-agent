@@ -316,14 +316,14 @@ export function createMiniApp(options: MiniAppOptions) {
           length: initData.length,
           fields: [...new URLSearchParams(initData).keys()],
         });
-        void saveDebug(result.error ?? "the init data was not accepted", initData);
+        await saveDebug(result.error ?? "the init data was not accepted", initData);
         return { ok: false, reason: "the init data was not accepted" };
       }
 
       const userId = result.user?.id;
       if (typeof userId !== "number" || !Number.isInteger(userId)) {
         logger.warn("the init data of telegram carries no user");
-        void saveDebug("the init data carries no user", initData);
+        await saveDebug("the init data carries no user", initData);
         return { ok: false, reason: "no user in the init data" };
       }
       if (!allowedUserIds.has(userId)) {

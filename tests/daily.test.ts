@@ -22,7 +22,6 @@ import { createDatabase } from "../src/db/index.js";
 import { notesLog } from "../src/db/schema.js";
 import type { HermesClient } from "../src/hermes/client.js";
 import { createLogger } from "../src/logger.js";
-import { readEvents } from "../src/vault/events.js";
 import { VaultGuard } from "../src/vault/guard.js";
 import { VaultOperations } from "../src/vault/operations.js";
 

@@ -18,6 +18,25 @@ export class VaultWriteError extends Error {
   }
 }
 
+/**
+ * Raised when a note was changed by another program in a way that cannot be
+ * merged with the write of the bot.
+ *
+ * The two versions are both kept: the note keeps the text of the other
+ * program, and the text of the bot is written next to it. The caller is told,
+ * because a conflict is not a success.
+ */
+export class VaultConflictError extends Error {
+  constructor(
+    message: string,
+    readonly relativePath: string,
+    readonly keptFile: string,
+  ) {
+    super(message);
+    this.name = "VaultConflictError";
+  }
+}
+
 export type WriteAction = "create" | "overwrite" | "append";
 
 export interface WriteResult {
@@ -35,6 +54,14 @@ export interface WriteResult {
   /** Syncthing conflict copies found next to the file. */
   conflictFiles: string[];
   notes: string[];
+  /**
+   * The identity of this write.
+   *
+   * An append carries it in the note, so the check after the write looks for
+   * the block of this very operation instead of looking for a text that may
+   * have been there before.
+   */
+  opId?: string;
 }
 
 export interface VaultGuardOptions {
@@ -46,6 +73,17 @@ export interface VaultGuardOptions {
   verifyDelayMs?: number;
   watcher?: VaultWatcher;
   sleep?: (ms: number) => Promise<void>;
+}
+
+export interface AppendOptions {
+  /**
+   * Called right before the write of an attempt.
+   *
+   * The tests use it to put an external change between the read and the write,
+   * which is exactly the race the append has to survive. In production it is
+   * not set.
+   */
+  beforeWrite?: () => Promise<void>;
 }
 
 const defaultSleep = (ms: number) => new Promise<void>((resolve) => setTimeout(resolve, ms));
@@ -63,9 +101,12 @@ function errorCode(error: unknown): string | undefined {
  * Writes notes in a way that survives Syncthing.
  *
  * Every write goes to a temporary file in the same directory and is then
- * renamed over the target, so a reader never sees a half written note. When a
- * write fails because the file is momentarily locked, or when the content is
- * changed right after our rename, the operation is retried with a delay.
+ * renamed over the target, so a reader never sees a half written note. The
+ * rename is atomic, and that is all it is: it does not stop another program
+ * from writing the same file between the read and the rename. An append
+ * therefore reads the file again on every attempt and applies its own block to
+ * the version it just read, and the check after the write looks for the id of
+ * that operation, not for the text of the whole old file.
  */
 export class VaultGuard {
   readonly vaultRoot: string;
@@ -96,22 +137,87 @@ export class VaultGuard {
     return this.runWithRetry(absolute, payload, existed ? "overwrite" : "create");
   }
 
-  /** Appends a block to a note without ever truncating existing content. */
-  async append(targetPath: string, block: string): Promise<WriteResult> {
+  /**
+   * Appends a block to a note without ever truncating existing content.
+   *
+   * The payload is built inside the attempt, from the version of the file that
+   * was read for that attempt. A retry after a conflict therefore applies the
+   * block to the new version instead of writing the old text again, which used
+   * to drop whatever the other program had written in between.
+   */
+  async append(
+    targetPath: string,
+    block: string,
+    options: AppendOptions = {},
+  ): Promise<WriteResult> {
     const absolute = resolveInsideVault(this.vaultRoot, targetPath);
     await mkdir(path.dirname(absolute), { recursive: true });
-    const current = await this.readIfExists(absolute);
-    const separator =
-      current === null || current === ""
-        ? ""
-        : current.endsWith("\n\n")
-          ? ""
-          : current.endsWith("\n")
-            ? "\n"
-            : "\n\n";
-    const payload = `${current ?? ""}${separator}${block.endsWith("\n") ? block : `${block}\n`}`;
 
-    return this.runWithRetry(absolute, payload, "append");
+    const opId = randomBytes(8).toString("hex");
+    const notes: string[] = [];
+    let lastError: unknown;
+
+    for (let attempt = 1; attempt <= this.maxAttempts; attempt += 1) {
+      try {
+        await this.settle(absolute);
+
+        // The version this attempt works on. It is read again on every
+        // attempt, so an external change is part of the next payload.
+        const current = await this.readIfExists(absolute);
+        const payload = buildAppendPayload(current, block, opId);
+
+        await options.beforeWrite?.();
+
+        // The write only lands if the file still holds the version the payload
+        // was built from. A change that arrived in between is not overwritten:
+        // the attempt is thrown away and the next one starts from the new
+        // version. The check and the rename are not one atomic step, so a
+        // change in that last instant is still possible; it is caught by the
+        // check after the write, which then retries instead of reporting a
+        // success.
+        const stillCurrent = await this.readIfExists(absolute);
+        if (stillCurrent !== current) {
+          notes.push(`attempt ${attempt}: the file changed before the write, retrying`);
+          await this.sleep(this.retryDelayMs);
+          continue;
+        }
+
+        await this.atomicWrite(absolute, payload);
+
+        const verification = await this.verifyAppend(absolute, opId);
+        if (verification.ok) {
+          const conflictFiles = await this.findConflictFiles(absolute);
+          return {
+            action: "append",
+            path: absolute,
+            relativePath: toRelative(this.vaultRoot, absolute),
+            title: path.basename(absolute).replace(/\.md$/i, ""),
+            bytes: Buffer.byteLength(payload, "utf8"),
+            verified: true,
+            attempts: attempt,
+            conflictFiles,
+            notes: [...notes, ...verification.notes],
+            opId,
+          };
+        }
+
+        notes.push(verification.note);
+        lastError = new Error(verification.note);
+        await this.sleep(this.retryDelayMs);
+      } catch (error) {
+        if (!isTransient(error)) throw error;
+        lastError = error;
+        notes.push(`attempt ${attempt}: ${errorCode(error) ?? "unknown error"}`);
+        await this.sleep(this.retryDelayMs);
+      }
+    }
+
+    throw new VaultWriteError(
+      `Could not append to ${toRelative(this.vaultRoot, absolute)} after ${this.maxAttempts} attempts: ${
+        (lastError as Error | undefined)?.message ?? "unknown error"
+      }`,
+      this.maxAttempts,
+    );
   }
 
   /**
@@ -156,7 +262,7 @@ export class VaultGuard {
         await this.settle(absolute);
         await this.atomicWrite(absolute, payload);
 
-        const verification = await this.verify(absolute, payload, action);
+        const verification = await this.verify(absolute, payload);
         if (verification.ok) {
           const conflictFiles = await this.findConflictFiles(absolute);
           return {
@@ -226,14 +332,14 @@ export class VaultGuard {
   }
 
   /**
-   * Reads the file back after the write. A concurrent Syncthing update may
-   * have replaced our content; for appends we accept the file as long as our
-   * block survived, because the rest of the note is newer data, not a loss.
+   * Reads the file back after a whole file write.
+   *
+   * The content has to be exactly what was written: a different text means
+   * another program wrote the file after the bot, and the bot tries again.
    */
   private async verify(
     absolute: string,
     payload: string,
-    action: WriteAction,
   ): Promise<{ ok: boolean; note: string; notes: string[] }> {
     await this.sleep(this.verifyDelayMs);
     const actual = await this.readIfExists(absolute);
@@ -243,17 +349,39 @@ export class VaultGuard {
     if (actual === payload) {
       return { ok: true, note: "", notes: [] };
     }
-    if (action === "append" && actual.includes(payload)) {
-      return {
-        ok: true,
-        note: "the note was updated concurrently, the appended block was preserved",
-        notes: ["the note was updated concurrently, the appended block was preserved"],
-      };
-    }
     return {
       ok: false,
       note: "the file changed right after the write, retrying",
       notes: ["the file changed right after the write, retrying"],
+    };
+  }
+
+  /**
+   * Reads the file back after an append and looks for the id of this very
+   * operation.
+   *
+   * Looking for the whole old payload was the bug: the old payload contains
+   * the file as it was before the other program changed it, so a note that
+   * lost an external edit still "contained" it. The id is written with the
+   * block, so it proves that the block of this operation is in the file and
+   * says nothing about the rest.
+   */
+  private async verifyAppend(
+    absolute: string,
+    opId: string,
+  ): Promise<{ ok: boolean; note: string; notes: string[] }> {
+    await this.sleep(this.verifyDelayMs);
+    const actual = await this.readIfExists(absolute);
+    if (actual === null) {
+      return { ok: false, note: "file disappeared right after the write", notes: [] };
+    }
+    if (actual.includes(opId)) {
+      return { ok: true, note: "", notes: [] };
+    }
+    return {
+      ok: false,
+      note: "the block of this operation is not in the file, retrying",
+      notes: ["the block of this operation is not in the file, retrying"],
     };
   }
 
@@ -301,4 +429,29 @@ export class VaultGuard {
       throw error;
     }
   }
+}
+
+/**
+ * The block as it goes into the note.
+ *
+ * The id of the operation is written as a comment at the end of the block. It
+ * is invisible in Obsidian, it does not change the text the owner reads, and
+ * it lets the check after the write find the block of this operation.
+ */
+export function markedBlock(block: string, opId: string): string {
+  const body = block.endsWith("\n") ? block.slice(0, -1) : block;
+  return `${body}\n<!-- op:${opId} -->\n`;
+}
+
+/**
+ * Builds the payload of an append from the version that was just read.
+ *
+ * The separator keeps the blocks apart without adding blank lines to a note
+ * that already ends with them.
+ */
+export function buildAppendPayload(current: string | null, block: string, opId: string): string {
+  const marked = markedBlock(block, opId);
+  if (current === null || current === "") return marked;
+  const separator = current.endsWith("\n\n") ? "" : current.endsWith("\n") ? "\n" : "\n\n";
+  return `${current}${separator}${marked}`;
 }

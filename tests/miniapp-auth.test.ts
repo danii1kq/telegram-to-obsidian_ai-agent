@@ -300,9 +300,9 @@ describe("A13: the life of the session of the mini app", () => {
     // carries the identity of the person and the hash, and it is not kept.
     const { readFile } = await import("node:fs/promises");
     const written = await readFile(debugFile, "utf8");
-    expect(written).not.toContain("42");
     expect(written).not.toContain("hash=00");
     expect(written).not.toContain(initData);
+    expect(written).not.toContain("%7B%22id%22");
     expect(written).toContain("fields=");
   });
 });

@@ -72,7 +72,13 @@ describe("A03: the summary never takes back the notes of another job", () => {
     });
 
     const summary = await runDailySummary(
-      { config: makeConfig(path.join(root, "events.json")), db, vault, hermes: quietAgent(), logger },
+      {
+        config: makeConfig(path.join(root, "events.json")),
+        db,
+        vault,
+        hermes: quietAgent(),
+        logger,
+      },
       "2026-10-21",
     );
     expect(summary?.day).toBe("2026-10-21");
@@ -102,7 +108,13 @@ describe("A03: the summary never takes back the notes of another job", () => {
     await vault.appendNote("Diary.md", "a line the owner added by hand");
 
     const summary = await runDailySummary(
-      { config: makeConfig(path.join(root, "events.json")), db, vault, hermes: quietAgent(), logger },
+      {
+        config: makeConfig(path.join(root, "events.json")),
+        db,
+        vault,
+        hermes: quietAgent(),
+        logger,
+      },
       "2026-10-21",
     );
     expect(summary).not.toBeNull();
@@ -119,8 +131,9 @@ describe("A03: the summary never takes back the notes of another job", () => {
 
     await vault.writeNote("Ideas.md", "an idea for the business");
     await db.insert(notesLog).values({
-      createdAt: new Date(localDayStartMs("2026-10-21", "/Almaty".replace("/", "Asia/")) + 3600_000)
-        .toISOString(),
+      createdAt: new Date(
+        localDayStartMs("2026-10-21", "/Almaty".replace("/", "Asia/")) + 3600_000,
+      ).toISOString(),
       action: "create",
       path: "Ideas.md",
       title: "Ideas",
@@ -133,7 +146,16 @@ describe("A03: the summary never takes back the notes of another job", () => {
     // the summary starts. It is not a stray write of the summary agent.
     await vault.writeNote("Another message.md", "written by the bot, not by the summary");
 
-    await runDailySummary({ config: makeConfig(path.join(root, "events.json")), db, vault, hermes: quietAgent(), logger }, "2026-10-21");
+    await runDailySummary(
+      {
+        config: makeConfig(path.join(root, "events.json")),
+        db,
+        vault,
+        hermes: quietAgent(),
+        logger,
+      },
+      "2026-10-21",
+    );
 
     const kept = await readFile(path.join(vaultPath, "Another message.md"), "utf8");
     expect(kept).toContain("written by the bot, not by the summary");

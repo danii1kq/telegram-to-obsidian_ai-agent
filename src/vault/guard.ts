@@ -2,7 +2,7 @@ import { randomBytes } from "node:crypto";
 import { constants } from "node:fs";
 import { access, mkdir, readdir, readFile, rename, rm, stat, writeFile } from "node:fs/promises";
 import path from "node:path";
-import { resolveInsideVault, toRelative } from "./paths.js";
+import { resolveRealInsideVault, toRelative } from "./paths.js";
 import type { VaultWatcher } from "./watcher.js";
 
 /** Error codes that mean "somebody else is touching the file right now". */
@@ -129,7 +129,7 @@ export class VaultGuard {
 
   /** Overwrites (or creates) a note. */
   async write(targetPath: string, content: string): Promise<WriteResult> {
-    const absolute = resolveInsideVault(this.vaultRoot, targetPath);
+    const absolute = await resolveRealInsideVault(this.vaultRoot, targetPath);
     await mkdir(path.dirname(absolute), { recursive: true });
     const existed = await this.exists(absolute);
     const payload = content.endsWith("\n") ? content : `${content}\n`;
@@ -150,7 +150,7 @@ export class VaultGuard {
     block: string,
     options: AppendOptions = {},
   ): Promise<WriteResult> {
-    const absolute = resolveInsideVault(this.vaultRoot, targetPath);
+    const absolute = await resolveRealInsideVault(this.vaultRoot, targetPath);
     await mkdir(path.dirname(absolute), { recursive: true });
 
     const opId = randomBytes(8).toString("hex");
@@ -227,7 +227,7 @@ export class VaultGuard {
    * that has the note open never sees it disappear in the middle of a read.
    */
   async remove(targetPath: string): Promise<{ removed: boolean; relativePath: string }> {
-    const absolute = resolveInsideVault(this.vaultRoot, targetPath);
+    const absolute = await resolveRealInsideVault(this.vaultRoot, targetPath);
     const relativePath = toRelative(this.vaultRoot, absolute);
     if (!(await this.exists(absolute))) {
       return { removed: false, relativePath };

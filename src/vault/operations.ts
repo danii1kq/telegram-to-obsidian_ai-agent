@@ -4,7 +4,7 @@ import path from "node:path";
 import type { Logger } from "../logger.js";
 import { appendEvent, type VaultEvent } from "./events.js";
 import type { VaultGuard, WriteResult } from "./guard.js";
-import { noteFileName, resolveInsideVault, toRelative } from "./paths.js";
+import { noteFileName, resolveInsideVault, resolveRealInsideVault, toRelative } from "./paths.js";
 import { parseFrontmatter, parseTags } from "./tags.js";
 
 export interface NoteInfo {
@@ -83,6 +83,10 @@ export class VaultOperations {
       }
       for (const entry of entries) {
         if (entry.name.startsWith(".")) continue;
+        // A link is skipped, not followed. `readdir` reports it as a link and
+        // not as a folder or a file, so the walk never leaves the vault and a
+        // note that lives outside is never listed as a note of the vault.
+        if (entry.isSymbolicLink()) continue;
         const full = path.join(directory, entry.name);
         if (entry.isDirectory()) {
           await walk(full);
@@ -228,7 +232,7 @@ export class VaultOperations {
   async readFile(
     targetPath: string,
   ): Promise<{ relativePath: string; content: string; lines: number }> {
-    const absolute = resolveInsideVault(this.vaultRoot, targetPath);
+    const absolute = await resolveRealInsideVault(this.vaultRoot, targetPath);
     const content = await readFile(absolute, "utf8");
     return {
       relativePath: toRelative(this.vaultRoot, absolute),
@@ -239,14 +243,14 @@ export class VaultOperations {
 
   /** When a note was changed the last time, and how big it is. */
   async statOf(targetPath: string): Promise<{ mtimeMs: number; size: number } | null> {
-    const absolute = resolveInsideVault(this.vaultRoot, targetPath);
+    const absolute = await resolveRealInsideVault(this.vaultRoot, targetPath);
     const info = await stat(absolute).catch(() => null);
     return info ? { mtimeMs: info.mtimeMs, size: info.size } : null;
   }
 
   /** Reads a file of the vault as it is, for the attachments. */
   async readBinary(targetPath: string): Promise<{ relativePath: string; data: Uint8Array }> {
-    const absolute = resolveInsideVault(this.vaultRoot, targetPath);
+    const absolute = await resolveRealInsideVault(this.vaultRoot, targetPath);
     const data = await readFile(absolute);
     return { relativePath: toRelative(this.vaultRoot, absolute), data };
   }
@@ -260,7 +264,7 @@ export class VaultOperations {
     content: string,
     options: { source?: VaultEvent["source"]; autoLink?: boolean; runId?: string } = {},
   ): Promise<WriteResult> {
-    const absolute = resolveInsideVault(this.vaultRoot, targetPath);
+    const absolute = await resolveRealInsideVault(this.vaultRoot, targetPath);
     const titles = options.autoLink === false ? [] : await this.cachedTitles();
     const selfTitle = path.basename(absolute).replace(/\.md$/i, "");
     const linked = autoLinkEntities(normalizeDashes(content), titles, selfTitle);
@@ -284,7 +288,7 @@ export class VaultOperations {
     block: string,
     options: { source?: VaultEvent["source"]; runId?: string } = {},
   ): Promise<WriteResult> {
-    const absolute = resolveInsideVault(this.vaultRoot, targetPath);
+    const absolute = await resolveRealInsideVault(this.vaultRoot, targetPath);
     const normalized = normalizeDashes(block);
     const result = await this.deps.guard.append(absolute, normalized);
     await this.record(result, options.source ?? "agent", {
@@ -302,7 +306,7 @@ export class VaultOperations {
     targetPath: string,
     block: string,
   ): Promise<{ removed: boolean; relativePath: string }> {
-    const absolute = resolveInsideVault(this.vaultRoot, targetPath);
+    const absolute = await resolveRealInsideVault(this.vaultRoot, targetPath);
     const relativePath = toRelative(this.vaultRoot, absolute);
     const current = await readFile(absolute, "utf8").catch(() => "");
     const index = current.lastIndexOf(block);
@@ -318,7 +322,7 @@ export class VaultOperations {
 
   /** Deletes a note of the vault. */
   async deleteNote(targetPath: string): Promise<{ removed: boolean; relativePath: string }> {
-    const absolute = resolveInsideVault(this.vaultRoot, targetPath);
+    const absolute = await resolveRealInsideVault(this.vaultRoot, targetPath);
     const result = await this.deps.guard.remove(absolute);
     return { removed: result.removed, relativePath: result.relativePath };
   }
@@ -331,7 +335,7 @@ export class VaultOperations {
    * two devices wrote at once, so the owner is told about them.
    */
   async conflictCopies(targetPath: string): Promise<string[]> {
-    const absolute = resolveInsideVault(this.vaultRoot, targetPath);
+    const absolute = await resolveRealInsideVault(this.vaultRoot, targetPath);
     const directory = path.dirname(absolute);
     const stem = path.basename(absolute).replace(/\.md$/i, "");
     const entries = await readdir(directory).catch(() => [] as string[]);

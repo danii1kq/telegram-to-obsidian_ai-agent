@@ -1,7 +1,7 @@
 import { randomBytes } from "node:crypto";
 import { access, mkdir, rename, rm, writeFile } from "node:fs/promises";
 import path from "node:path";
-import { sanitizeFileName } from "./paths.js";
+import { resolveRealInsideVault, sanitizeFileName } from "./paths.js";
 
 /** The folder of the vault where the files of the owner are stored. */
 export const ATTACHMENTS_FOLDER = "attachments";
@@ -41,13 +41,17 @@ export async function saveAttachment(
   data: Uint8Array,
   date: string,
 ): Promise<SavedAttachment> {
-  const folder = path.join(path.resolve(vaultRoot), ATTACHMENTS_FOLDER);
+  const root = path.resolve(vaultRoot);
+  // The attachments folder is a path inside the vault like any other, so it
+  // goes through the same check: a folder that is a link to somewhere else
+  // would put the files of the owner outside of the vault.
+  const folder = await resolveRealInsideVault(root, ATTACHMENTS_FOLDER);
   await mkdir(folder, { recursive: true });
 
   const safe = sanitizeFileName(fileName).replace(/\.{2,}/g, ".") || "file";
   const base = `${date}_${safe}`;
   const name = await freeName(folder, base);
-  const target = path.join(folder, name);
+  const target = await resolveRealInsideVault(root, `${ATTACHMENTS_FOLDER}/${name}`);
   const temp = path.join(folder, `.${name}.${randomBytes(6).toString("hex")}.tmp`);
 
   await writeFile(temp, data);

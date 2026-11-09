@@ -33,6 +33,16 @@ export const undoLog = sqliteTable("undo_log", {
   block: text("block"),
   /** The content before the write, for the overwrite. */
   previous: text("previous"),
+  /**
+   * The hash of the text the bot wrote.
+   *
+   * The undo of a created note deletes the file, and it may only do that when
+   * the file is still what the bot wrote. A modification time cannot answer
+   * that question: the log entry is written after the file, so any tolerance
+   * wide enough to cover the gap is also wide enough to hide an edit of the
+   * owner. The hash answers it exactly.
+   */
+  contentHash: text("content_hash"),
   /** When the write was undone. */
   undoneAt: text("undone_at"),
   telegramUserId: text("telegram_user_id"),

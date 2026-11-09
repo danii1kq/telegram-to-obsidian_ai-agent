@@ -1,4 +1,4 @@
-import { mkdtemp, readFile, writeFile } from "node:fs/promises";
+import { mkdtemp, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { describe, expect, it } from "vitest";
@@ -14,7 +14,7 @@ const logger = createLogger("error", "test");
  * the test sees exactly what a child process of the bot would see. No real
  * Hermes, no model, no network.
  */
-async function makeFakeAgent(root: string): Promise<string> {
+async function makeFakeAgent(root: string): Promise<void> {
   // The client runs `node chat ...`, so the entry point is a file named `chat`.
   const script = path.join(root, "chat");
   await writeFile(
@@ -28,13 +28,13 @@ async function makeFakeAgent(root: string): Promise<string> {
     ].join("\n"),
     "utf8",
   );
-  return script;
 }
 
 /** Runs the client against the fake agent and gives the environment it saw. */
 async function runWith(env: NodeJS.ProcessEnv): Promise<Record<string, string>> {
   const root = await mkdtemp(path.join(tmpdir(), "hermes-env-"));
-  const script = await makeFakeAgent(root);
+  // The client runs `node chat ...`, so the entry point is a file named `chat`.
+  await makeFakeAgent(root);
   const client = new HermesClient({
     bin: process.execPath,
     model: "test-model",

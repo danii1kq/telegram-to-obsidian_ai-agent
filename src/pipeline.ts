@@ -26,10 +26,32 @@ export interface ProcessResult {
   agentText: string;
   /** The block that was appended, so the append can be undone. */
   block?: string;
+  /** The text before an overwrite, so the overwrite can be undone. */
+  previous?: string;
   /** The size of the note after the write, in bytes. */
   bytes: number;
   /** Syncthing conflict copies that appeared next to the note. */
   conflicts: string[];
+  /**
+   * Every write of this message.
+   *
+   * The agent may touch more than one note, and the last one is not the only
+   * one that has to be undoable. The list is what the log of the undo keeps.
+   */
+  mutations: Mutation[];
+}
+
+/** One write of the bot, as the log of the undo needs it. */
+export interface Mutation {
+  action: "create" | "overwrite" | "append";
+  path: string;
+  title: string;
+  /** The block of an append. */
+  block?: string;
+  /** The text before an overwrite. */
+  previous?: string;
+  /** The text after the write, so the next undo can prove it is unchanged. */
+  content: string;
 }
 
 /**
@@ -88,6 +110,13 @@ export async function processMessage(
     if (attachment) {
       await ensureEmbed(deps.vault, last.path, attachment);
     }
+
+    // Every write of this message goes into the log of the undo, not only the
+    // last one: the agent may touch more than one note, and the owner expects
+    // /undo to take back what the message did.
+    const mutations = await collectMutations(deps.vault, fresh);
+    const lastMutation = mutations[mutations.length - 1];
+
     return {
       status: statusFor(last, language),
       action: last.action,
@@ -98,6 +127,8 @@ export async function processMessage(
       bytes: last.bytes,
       conflicts: await conflictsOf(deps.vault, last.path),
       ...(last.block ? { block: last.block } : {}),
+      ...(lastMutation?.previous !== undefined ? { previous: lastMutation.previous } : {}),
+      mutations,
     };
   }
 
@@ -109,6 +140,31 @@ export async function processMessage(
     error: run.error,
   });
   return fallbackWrite(text, deps, run.text, language, attachment);
+}
+
+/**
+ * The writes of this message, with what the undo needs to take them back.
+ *
+ * The event log holds the block and the text before an overwrite, but not the
+ * text after the write. The undo needs that text: it is the only way to prove
+ * that the note is still the one the bot wrote before deleting it. So the
+ * notes are read once here, at the end of the message, and the result carries
+ * the text of each write.
+ */
+async function collectMutations(vault: VaultOperations, events: VaultEvent[]): Promise<Mutation[]> {
+  const mutations: Mutation[] = [];
+  for (const event of events) {
+    const file = await vault.readFile(event.path).catch(() => null);
+    mutations.push({
+      action: event.action,
+      path: event.path,
+      title: event.title,
+      ...(event.block ? { block: event.block } : {}),
+      ...(event.previous !== undefined ? { previous: event.previous } : {}),
+      content: file?.content ?? "",
+    });
+  }
+  return mutations;
 }
 
 /** Writes the message into the vault without the agent. */
@@ -142,6 +198,15 @@ async function fallbackWrite(
       bytes: result.bytes,
       conflicts: result.conflictFiles.map((file) => path.basename(file)),
       block: normalizeDashes(block),
+      mutations: [
+        {
+          action: "append",
+          path: result.relativePath,
+          title: result.title,
+          block: normalizeDashes(block),
+          content: await readNoteContent(deps.vault, result.relativePath),
+        },
+      ],
     };
   }
 
@@ -158,7 +223,21 @@ async function fallbackWrite(
     agentText,
     bytes: result.bytes,
     conflicts: result.conflictFiles.map((file) => path.basename(file)),
+    mutations: [
+      {
+        action: "create",
+        path: result.relativePath,
+        title: result.title,
+        content: await readNoteContent(deps.vault, result.relativePath),
+      },
+    ],
   };
+}
+
+/** The text of a note, or an empty string when it cannot be read. */
+async function readNoteContent(vault: VaultOperations, relativePath: string): Promise<string> {
+  const file = await vault.readFile(relativePath).catch(() => null);
+  return file?.content ?? "";
 }
 
 /**

@@ -48,10 +48,13 @@ export async function ensureSchema(client: Client): Promise<void> {
       title TEXT NOT NULL,
       block TEXT,
       previous TEXT,
+      content_hash TEXT,
       undone_at TEXT,
       telegram_user_id TEXT
     )`,
   );
+  // A database that was created before the hash existed gets the column here.
+  await client.execute("ALTER TABLE undo_log ADD COLUMN content_hash TEXT").catch(() => undefined);
   await client.execute(
     `CREATE TABLE IF NOT EXISTS daily_summaries (
       date TEXT PRIMARY KEY,

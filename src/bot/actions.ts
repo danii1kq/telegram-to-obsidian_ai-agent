@@ -1,3 +1,4 @@
+import { createHash } from "node:crypto";
 import { and, count, desc, eq, isNull } from "drizzle-orm";
 import type { Database } from "../db/index.js";
 import { dailySummaries, notesLog, undoLog } from "../db/schema.js";
@@ -26,7 +27,7 @@ export interface StatusDeps {
 }
 
 /** The notes that wait for a confirmation of the owner. */
-const pendingDeletes = new Map<string, { path: string; title: string }>();
+const pendingDeletes = new Map<string, { path: string; title: string; id: number }>();
 
 const MAX_RESULTS = 12;
 
@@ -115,15 +116,18 @@ export async function undoLast(
     return messages(language).undoRestored(entry.title);
   }
 
-  // The note was created by the bot. It is only deleted when nobody touched
-  // it in the meantime, otherwise the owner has to confirm it.
+  // The note was created by the bot. It is only deleted when its content is
+  // still exactly what the bot wrote, otherwise the owner has to confirm it.
   if (!confirmed) {
-    const changed = await wasChangedAfter(entry.path, entry.createdAt, deps);
+    const changed = await wasChangedSince(entry.path, entry.createdAt, entry.contentHash, deps);
     if (changed) {
-      pendingDeletes.set(String(userId), { path: entry.path, title: entry.title });
+      pendingDeletes.set(String(userId), { path: entry.path, title: entry.title, id: entry.id });
       return messages(language).undoConfirm(entry.title);
     }
-  } else if (!pending || pending.path !== entry.path) {
+  } else if (!pending || pending.path !== entry.path || pending.id !== entry.id) {
+    // The confirmation belongs to the entry the question was asked about. A
+    // write that arrived in between is a different entry, and deleting it
+    // would throw away a note the owner never agreed to lose.
     return messages(language).undoNothingToConfirm;
   }
 
@@ -188,15 +192,34 @@ function uptime(milliseconds: number, language: Language): string {
   return text.uptimeMinutes(minutes);
 }
 
-/** True when the file was changed after the bot wrote it. */
-async function wasChangedAfter(
+/**
+ * True when the note is not the one the bot wrote.
+ *
+ * The old check compared the modification time with the moment of the log
+ * entry and allowed five seconds of tolerance. The tolerance was there because
+ * the log entry is written after the file, and it is exactly what made the
+ * check useless: an edit of the owner inside those five seconds was invisible,
+ * and the note was deleted without a question.
+ *
+ * The content hash is the honest check. The hash is taken when the bot writes
+ * the note, so any change of the text, by the owner, by Obsidian or by a sync
+ * client, is a difference. A note that has no hash, because it was written
+ * before this field existed, counts as changed: a delete that cannot be proven
+ * safe is a delete that needs a confirmation.
+ */
+async function wasChangedSince(
   relativePath: string,
-  createdAt: string,
+  _createdAt: string,
+  contentHash: string | null,
   deps: ActionDeps,
 ): Promise<boolean> {
-  const info = await deps.vault.statOf(relativePath);
-  if (!info) return false;
-  const writtenAt = Date.parse(createdAt);
-  if (!Number.isFinite(writtenAt)) return false;
-  return info.mtimeMs > writtenAt + 5_000;
+  if (!contentHash) return true;
+  const file = await deps.vault.readFile(relativePath).catch(() => null);
+  if (!file) return false;
+  return hashOf(file.content) !== contentHash;
+}
+
+/** The hash of the text of a note, the same way the log stores it. */
+export function hashOf(content: string): string {
+  return createHash("sha256").update(content, "utf8").digest("hex");
 }

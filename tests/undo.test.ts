@@ -2,7 +2,7 @@
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { describe, expect, it } from "vitest";
-import { listInbox, searchNotes, undoLast } from "../src/bot/actions.js";
+import { hashOf, listInbox, searchNotes, undoLast } from "../src/bot/actions.js";
 import { createDatabase } from "../src/db/index.js";
 import { undoLog } from "../src/db/schema.js";
 import { createLogger } from "../src/logger.js";
@@ -97,11 +97,15 @@ describe("undoLast", () => {
     const { root, vault, db, client } = await makeWorld();
     await vault.writeNote("Ideas.md", "an idea");
 
+    // The entry carries the hash of the text the bot wrote, which is how the
+    // undo proves the note is still the bot's before deleting it.
+    const written = await readFile(path.join(root, "vault", "Ideas.md"), "utf8");
     await db.insert(undoLog).values({
       createdAt: new Date().toISOString(),
       action: "create",
       path: "Ideas.md",
       title: "Ideas",
+      contentHash: hashOf(written),
       telegramUserId: "1",
     });
 

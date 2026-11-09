@@ -3,7 +3,7 @@ import { createServer, type IncomingMessage, type ServerResponse } from "node:ht
 import path from "node:path";
 import { desc } from "drizzle-orm";
 import { type Bot, InlineKeyboard } from "grammy";
-import { buildStatus, listInbox, searchNotes, undoLast } from "./bot/actions.js";
+import { buildStatus, hashOf, listInbox, searchNotes, undoLast } from "./bot/actions.js";
 import { AttachmentTooBigError, downloadAttachment } from "./bot/attachments.js";
 import { createBot } from "./bot/bot.js";
 import { Inbox } from "./bot/inbox.js";
@@ -156,10 +156,22 @@ async function main(): Promise<void> {
   const setLanguage = (userId: number, language: Language): Promise<void> =>
     saveLanguage(languageStore, userId, language);
 
-  /** Writes the result of the pipeline into the log of the notes and of the undo. */
+  /**
+   * Writes the result of the pipeline into the log of the notes and of the undo.
+   *
+   * The log is written before the answer goes to Telegram. The other order was
+   * the bug: a failed `sendMessage` left a note that was already written with
+   * no entry in the log, so the write could not be undone and the owner had no
+   * record of it. A notification is a courtesy, the log is the record.
+   *
+   * Every write of the message is kept, not only the last one, and each one
+   * carries the hash of the text the bot wrote. The undo of a created note
+   * needs that hash to prove the note is still the bot's before deleting it.
+   */
   const record = async (result: ProcessResult, userId: number): Promise<void> => {
+    const at = new Date().toISOString();
     await db.insert(notesLog).values({
-      createdAt: new Date().toISOString(),
+      createdAt: at,
       action: result.action,
       path: result.path,
       title: result.title,
@@ -167,13 +179,16 @@ async function main(): Promise<void> {
       bytes: result.bytes,
       telegramUserId: String(userId),
     });
-    if (result.action !== "none") {
+
+    for (const mutation of result.mutations) {
       await db.insert(undoLog).values({
-        createdAt: new Date().toISOString(),
-        action: result.action,
-        path: result.path,
-        title: result.title,
-        block: result.block ?? null,
+        createdAt: at,
+        action: mutation.action,
+        path: mutation.path,
+        title: mutation.title,
+        block: mutation.block ?? null,
+        previous: mutation.previous ?? null,
+        contentHash: mutation.content ? hashOf(mutation.content) : null,
         telegramUserId: String(userId),
       });
     }
@@ -196,9 +211,13 @@ async function main(): Promise<void> {
             { config, hermes, vault, logger: logger.child("pipeline") },
             { language },
           );
-          await bot.api.sendMessage(chatId, statusWithConflicts(result, language));
+          // The log first, the answer second: a failed notification must not
+          // leave a written note with no record of it.
           await record(result, userId);
           lastMessageAt = Date.now();
+          await bot.api
+            .sendMessage(chatId, statusWithConflicts(result, language))
+            .catch((error) => logger.warn("the status was not sent", { error: String(error) }));
         } catch (error) {
           logger.error("could not process the message", { error: String(error) });
           await bot.api.sendMessage(chatId, messages(language).errorWrite).catch(() => undefined);
@@ -236,9 +255,12 @@ async function main(): Promise<void> {
             { config, hermes, vault, logger: logger.child("pipeline") },
             { attachment: saved, language },
           );
-          await bot.api.sendMessage(chatId, statusWithConflicts(result, language));
+          // The log first, the answer second, the same as for a text message.
           await record(result, userId);
           lastMessageAt = Date.now();
+          await bot.api
+            .sendMessage(chatId, statusWithConflicts(result, language))
+            .catch((error) => logger.warn("the status was not sent", { error: String(error) }));
         } catch (error) {
           // The limit is the only failure the owner can do something about, so
           // it is the only one that gets the message about the size.
@@ -628,12 +650,12 @@ function summaryMarkup(
  * container. The bot waits and asks again instead of falling down.
  */
 async function startPolling(bot: Bot, logger: Logger): Promise<void> {
-  let first = true;
-
   for (;;) {
     try {
       await bot.start({
         onStart: (info) => logger.info("the bot is polling Telegram", { username: info.username }),
+        // The updates that arrived while the bot was down are handled, not
+        // dropped: a message of the owner is not a stale event.
         drop_pending_updates: false,
       });
       return;
@@ -642,7 +664,6 @@ async function startPolling(bot: Bot, logger: Logger): Promise<void> {
         error: String(error),
       });
       await new Promise((resolve) => setTimeout(resolve, 15_000));
-      first = false;
     }
   }
 }

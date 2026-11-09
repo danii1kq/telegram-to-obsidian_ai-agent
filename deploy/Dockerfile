@@ -8,7 +8,7 @@
 #   stage 3 (runtime) : the final image with the application and the agent
 # ==============================================================================
 
-FROM node:22-bookworm-slim AS base
+FROM node:22.20.0-bookworm-slim AS base
 
 ENV DEBIAN_FRONTEND=noninteractive \
     NODE_ENV=production \
@@ -33,11 +33,18 @@ RUN apt-get update \
 # --- Hermes Agent ------------------------------------------------------------
 # The agent is installed into the home directory of the `node` user, so it
 # lives in the image and does not need the network at runtime.
+#
+# The version is pinned. The installer script is fetched from a remote address
+# and runs with the rights of the build, so an unpinned install means that a
+# rebuild of the same commit can produce a different agent, and a change on the
+# other side of that address lands in the image without a review. The variable
+# is here so a bump is one line and a rebuild.
+ARG HERMES_VERSION=2026.9.24
 USER node
 WORKDIR /home/node
 
 RUN curl -fsSL https://hermes-agent.nousresearch.com/install.sh \
-      | bash -s -- --non-interactive --skip-browser --skip-computer-use
+      | bash -s -- --non-interactive --skip-browser --skip-computer-use --version "${HERMES_VERSION}"
 
 # The MCP client of the agent (the Python SDK) is an optional extra.
 RUN /home/node/.local/bin/hermes pm install --extra mcp
@@ -73,7 +80,7 @@ RUN npm run build
 
 # --- Mini App build ----------------------------------------------------------
 # The frontend of the Mini App: React and Vite.
-FROM node:22-bookworm-slim AS web-builder
+FROM node:22.20.0-bookworm-slim AS web-builder
 
 ENV NODE_ENV=development
 

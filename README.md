@@ -163,22 +163,41 @@ of a damaged note and a lost change, every write goes through several layers of
 protection:
 
 - **Atomic write.** The new content is first saved to a temporary file, which
-  is then renamed over the target. This avoids reading a half written note.
+  is then renamed over the target. This avoids reading a half written note. It
+  does not stop another program from writing the same file in the same instant,
+  and it is not described as if it did.
 - **Waiting after a change.** If `fs.watch` sees a recent change of the file,
   the write is put off for a second.
 - **Retries.** If the file is locked, the bot repeats the write every 500 ms.
-- **Checking the result.** After the write the file is read back. If the
-  synchroniser changed its content in the meantime, the operation is repeated.
-  An append takes the existing content into account.
+- **A fresh read on every attempt.** An append builds its payload from the
+  version of the note it just read, so a retry after a conflict applies the
+  block to the new text instead of writing the old one again. Before the rename
+  the note is read once more, and the write only lands if it still holds that
+  version.
+- **Checking its own block.** The check after an append looks for the id of
+  that very operation, which is written into the note as an invisible comment.
+  It proves that the block of this run is in the file and says nothing about
+  the rest of the text.
 - **Watching the conflicts.** Syncthing conflict copies with names like
   `*.sync-conflict-*` are shown in the report.
 
-The paths of the MCP tools are resolved against the root of the vault: the
-agent cannot write files outside of it.
+The paths of the MCP tools are resolved to their real location before every
+read, write and delete, so a link inside the vault cannot lead outside of it.
+The listing skips links instead of following them. This is a check before the
+operation, not a lock: a folder that is replaced by a link between the check
+and the write is not caught by it.
 
-The agent that makes the daily summary uses the same tools, but its
-intermediate changes are taken back. Only the update of the file of the month
-stays.
+The agent that makes the daily summary has no tool that writes: it gets the
+`safe` toolset, which the reference of Hermes defines as read-only research.
+The only file the summary changes is the file of the month, and the bot writes
+it itself.
+
+## The backup
+
+Syncthing is not a backup: it copies a mistake to every device as faithfully as
+it copies a note. The vault and the database are backed up separately, and the
+restore is checked, not assumed. [docs/backup.md](docs/backup.md) has the
+commands, the retention and the order of a restore.
 
 ## Stack
 

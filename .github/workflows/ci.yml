@@ -46,6 +46,21 @@ jobs:
       - name: Build of the vault MCP package
         run: npm run build --prefix packages/vault-mcp
 
+      # The audit runs against each lockfile on its own: the three packages
+      # have three dependency graphs, and a clean root says nothing about the
+      # graph of the frontend or of the MCP server.
+      - name: Audit of the backend
+        run: npm audit --audit-level=low
+
+      - name: Audit of the Mini App
+        run: npm audit --prefix web --audit-level=low
+
+      - name: Audit of the vault MCP package
+        run: npm audit --prefix packages/vault-mcp --audit-level=low
+
+      - name: Tests of the Mini App
+        run: npm test --prefix web
+
   deploy:
     needs: check
     if: github.ref == 'refs/heads/main' && github.event_name == 'push'

@@ -45,14 +45,37 @@ BOT_TOKEN="${TELEGRAM_BOT_TOKEN:-}"
 OWNER_ID="${ALLOWED_TELEGRAM_ID:-}"
 unset TELEGRAM_BOT_TOKEN
 unset ALLOWED_TELEGRAM_ID
+# The rest of the secrets are not needed by the agent either, and the agent
+# inherits the environment of this shell. The application reads them from the
+# file of the environment, so they are kept for the start below and removed
+# from the environment the agent would see.
+LLM_KEY="${LLM_API_KEY:-}"
+MINI_TOKEN="${MINI_APP_TOKEN:-}"
+WEBHOOK_SECRET="${TELEGRAM_WEBHOOK_SECRET:-}"
+unset LLM_API_KEY
+unset MINI_APP_TOKEN
+unset TELEGRAM_WEBHOOK_SECRET
 
 # --- Model provider ---------------------------------------------------------
 # The agent talks to a local proxy: it adds the session header the OpenCode Go
 # relay requires and keeps the real key out of the agent configuration.
-hermes config set model.provider custom 2>/dev/null || log "warning: could not set model.provider"
-hermes config set model.base_url "http://127.0.0.1:${LLM_PROXY_PORT:-11434}/v1" 2>/dev/null || log "warning: could not set model.base_url"
-hermes config set model.api_key "local-proxy" 2>/dev/null || log "warning: could not set model.api_key"
-hermes config set model.default "${HERMES_MODEL:-beam-free}" 2>/dev/null || log "warning: could not set model.default"
+#
+# A failure here is fatal. The agent without a provider answers nothing, and a
+# bot that starts and silently writes no notes is worse than a container that
+# refuses to start: the owner sees an error instead of losing messages.
+set_provider() {
+  local key="$1"
+  local value="$2"
+  if ! hermes config set "$key" "$value" >/dev/null 2>&1; then
+    log "FATAL: could not set $key"
+    exit 1
+  fi
+}
+
+set_provider model.provider custom
+set_provider model.base_url "http://127.0.0.1:${LLM_PROXY_PORT:-11434}/v1"
+set_provider model.api_key "local-proxy"
+set_provider model.default "${HERMES_MODEL:-beam-free}"
 
 # --- MCP servers ------------------------------------------------------------
 # The servers are written with `hermes config set`, the command that updates
@@ -68,19 +91,22 @@ mcp_enabled() {
 }
 
 # The vault: our own server, it writes the notes in a way that is safe for
-# Syncthing.
+# Syncthing. This one is not optional: without it the agent has no way to write
+# a note at all, because the note run has no direct file tools.
 if ! mcp_enabled vault; then
-  hermes config set mcp_servers.vault.command node 2>/dev/null || log "warning: could not set the vault command"
-  hermes config set mcp_servers.vault.args '["/app/dist/vault/mcp-server.js"]' 2>/dev/null || log "warning: could not set the vault args"
-  hermes config set mcp_servers.vault.env "{\"OBSIDIAN_VAULT_PATH\":\"${OBSIDIAN_VAULT_PATH:-/vault}\",\"VAULT_EVENTS_FILE\":\"${VAULT_EVENTS_FILE:-/app/data/vault-events.json}\",\"TIMEZONE\":\"${TZ:-Asia/Almaty}\",\"LOG_LEVEL\":\"${LOG_LEVEL:-info}\"}" 2>/dev/null || log "warning: could not set the vault env"
-  hermes config set mcp_servers.vault.enabled true 2>/dev/null || log "warning: could not enable the vault server"
+  set_provider mcp_servers.vault.command node
+  set_provider mcp_servers.vault.args '["/app/dist/vault/mcp-server.js"]'
+  set_provider mcp_servers.vault.env "{\"OBSIDIAN_VAULT_PATH\":\"${OBSIDIAN_VAULT_PATH:-/vault}\",\"VAULT_EVENTS_FILE\":\"${VAULT_EVENTS_FILE:-/app/data/vault-events.json}\",\"TIMEZONE\":\"${TZ:-Asia/Almaty}\",\"LOG_LEVEL\":\"${LOG_LEVEL:-info}\"}"
+  set_provider mcp_servers.vault.enabled true
 fi
 
-# The web search: the DuckDuckGo server of the community.
+# The web search: the DuckDuckGo server of the community. The version is
+# pinned, so a user message never pulls a new release of the server from the
+# network in the middle of a run.
 if ! mcp_enabled ddg-search; then
-  hermes config set mcp_servers.ddg-search.command uvx 2>/dev/null || log "warning: could not set the search command"
-  hermes config set mcp_servers.ddg-search.args '["--with","duckduckgo-mcp-server[browser]","duckduckgo-mcp-server"]' 2>/dev/null || log "warning: could not set the search args"
-  hermes config set mcp_servers.ddg-search.enabled true 2>/dev/null || log "warning: could not enable the search server"
+  set_provider mcp_servers.ddg-search.command uvx
+  set_provider mcp_servers.ddg-search.args '["--from","duckduckgo-mcp-server==0.2.5","duckduckgo-mcp-server"]'
+  set_provider mcp_servers.ddg-search.enabled true
 fi
 
 log "mcp servers:"
@@ -90,4 +116,7 @@ hermes mcp list 2>&1 | sed 's/^/[entrypoint] /' || log "warning: could not list 
 log "starting: $*"
 export TELEGRAM_BOT_TOKEN="$BOT_TOKEN"
 export ALLOWED_TELEGRAM_ID="$OWNER_ID"
+export LLM_API_KEY="$LLM_KEY"
+export MINI_APP_TOKEN="$MINI_TOKEN"
+export TELEGRAM_WEBHOOK_SECRET="$WEBHOOK_SECRET"
 exec "$@"

@@ -39,8 +39,6 @@ const MAX_SCANNED_BYTES = 512 * 1024;
 const MAX_SEARCH_HITS = 60;
 /** How many notes are read at once by a search. */
 const READ_CONCURRENCY = 16;
-/** How long a regular expression may take on a short sample before it is dropped. */
-const REGEX_SAMPLE_BUDGET_MS = 50;
 /** How long the titles of the notes are reused for the wiki links. */
 const TITLES_CACHE_MS = 2000;
 
@@ -161,16 +159,16 @@ export class VaultOperations {
    * Searches the vault. `files` matches note names, `content` matches the
    * text inside the notes. Both accept a glob (`*.md`) or a plain substring.
    *
-   * The content is matched as a plain substring unless `regex` is set: a
-   * pattern from a chat message is not a regular expression, and a pattern
-   * like `(a+)+` takes the whole process down with a backtracking blowup.
+   * The content is always matched as a plain substring. A pattern from a chat
+   * message is not a regular expression, and a pattern like `(a+)+` takes the
+   * whole process down with a backtracking blowup, so there is no regular
+   * expression mode at all.
    */
   async searchFiles(params: {
     target?: "files" | "content";
     pattern: string;
     path?: string;
     file_glob?: string;
-    regex?: boolean;
   }): Promise<SearchHit[]> {
     const target = params.target ?? "files";
     // The pattern can be a regular expression, so it is kept short: a long
@@ -194,7 +192,7 @@ export class VaultOperations {
       return hits.slice(0, MAX_SEARCH_HITS);
     }
 
-    const contentMatcher = buildContentMatcher(pattern, params.regex === true);
+    const contentMatcher = buildContentMatcher(pattern);
     const candidates = notes
       .filter((note) => !glob || matchesGlob(note.relativePath, glob))
       // The size is already known from the listing, so a note that is too big
@@ -488,35 +486,19 @@ function buildMatcher(pattern: string): (value: string) => boolean {
 /**
  * Builds a matcher for note content.
  *
- * A plain substring is the default, because that is what a query typed by a
- * person means. A regular expression is only built when the caller asks for
- * it, and even then it is tried on a short sample first: a pattern with
- * nested quantifiers can backtrack for minutes on a single line.
+ * A plain substring is the only mode. There used to be a regular expression
+ * mode behind a `regex` flag, and it was a way to stop the process: a pattern
+ * with nested quantifiers backtracks for minutes on a single line, and the
+ * check that was supposed to guard it ran `test` on a harmless sample, which
+ * says nothing about the line that will hang. A timeout around a synchronous
+ * `test` cannot interrupt it either, because the event loop is busy inside the
+ * call. A pattern typed by a person means a substring, so that is what is
+ * supported.
  */
-function buildContentMatcher(pattern: string, regex: boolean): (line: string) => boolean {
+function buildContentMatcher(pattern: string): (line: string) => boolean {
   // The needle is lowered once, not once per line: a vault has a lot of lines.
   const needle = pattern.toLowerCase();
-  const plain = (line: string) => line.toLowerCase().includes(needle);
-  if (!regex) return plain;
-
-  let compiled: RegExp;
-  try {
-    compiled = new RegExp(pattern, "i");
-  } catch {
-    return plain;
-  }
-
-  // A pattern that cannot answer a short line quickly is not used at all.
-  const sample = "the quick brown fox jumps over the lazy dog 0123456789";
-  const startedAt = Date.now();
-  try {
-    compiled.test(sample);
-  } catch {
-    return plain;
-  }
-  if (Date.now() - startedAt > REGEX_SAMPLE_BUDGET_MS) return plain;
-
-  return (line) => compiled.test(line);
+  return (line) => line.toLowerCase().includes(needle);
 }
 
 function hasGlob(pattern: string): boolean {

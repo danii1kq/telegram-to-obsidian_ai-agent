@@ -136,19 +136,31 @@ describe("VaultOperations", () => {
     expect(none).toHaveLength(0);
   });
 
-  it("uses a regular expression only when it is asked for", async () => {
+  it("matches the content as a plain substring, never as a regular expression", async () => {
     const { operations } = await makeOperations();
     await operations.writeNote("Health.md", "running every morning");
 
+    // A dot is a dot, not "any character".
     const plain = await operations.searchFiles({ target: "content", pattern: "runn.ng" });
     expect(plain).toHaveLength(0);
 
-    const regex = await operations.searchFiles({
-      target: "content",
-      pattern: "runn.ng",
-      regex: true,
-    });
-    expect(regex[0]?.relativePath).toBe("Health.md");
+    // The exact text is found.
+    const exact = await operations.searchFiles({ target: "content", pattern: "running" });
+    expect(exact[0]?.relativePath).toBe("Health.md");
+  });
+
+  it("does not hang on a pattern that would backtrack as a regular expression", async () => {
+    const { operations } = await makeOperations();
+    // The note that stopped the old regex mode: 32 letters and a bang.
+    await operations.writeNote("ReDoS.md", `${"a".repeat(32)}!`);
+
+    const startedAt = Date.now();
+    const hits = await operations.searchFiles({ target: "content", pattern: "(a+)+$" });
+    const elapsed = Date.now() - startedAt;
+
+    // The pattern is a substring, so it matches nothing and answers at once.
+    expect(hits).toHaveLength(0);
+    expect(elapsed).toBeLessThan(1000);
   });
 
   it("appends to a note and records the event", async () => {

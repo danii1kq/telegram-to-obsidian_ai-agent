@@ -19,20 +19,16 @@ const TOOLS = [
   {
     name: "search_files",
     description:
-      "Search the Obsidian vault. Use target 'files' to find notes by name, target 'content' to search inside notes. The pattern is a plain substring by default; set regex to true to use a regular expression. Returns the matching note paths.",
+      "Search the Obsidian vault. Use target 'files' to find notes by name, target 'content' to search inside notes. The pattern is a plain substring. Returns the matching note paths.",
     inputSchema: {
       type: "object",
       properties: {
         target: { type: "string", enum: ["files", "content"], description: "files or content" },
-        pattern: { type: "string", description: "glob, substring or regular expression" },
+        pattern: { type: "string", description: "glob or plain substring" },
         path: { type: "string", description: "absolute or vault relative folder to search in" },
         file_glob: {
           type: "string",
           description: "only match files with this glob, for example *.md",
-        },
-        regex: {
-          type: "boolean",
-          description: "treat the pattern as a regular expression instead of a plain substring",
         },
       },
       required: ["pattern"],
@@ -62,7 +58,7 @@ const TOOLS = [
   {
     name: "write_file",
     description:
-      "Create or overwrite a note in the Obsidian vault. The write is atomic and safe for Syncthing. New notes get the frontmatter automatically when it is missing.",
+      "Create a new note in the Obsidian vault. Use this for a note that does not exist yet. An existing note is never overwritten: to add to it, use the append tool. New notes get the frontmatter automatically when it is missing.",
     inputSchema: {
       type: "object",
       properties: {
@@ -147,7 +143,6 @@ export async function runMcpServer(): Promise<void> {
             pattern: String(args.pattern ?? ""),
             path: args.path ? String(args.path) : undefined,
             file_glob: args.file_glob ? String(args.file_glob) : undefined,
-            regex: args.regex === true,
           });
           return text(
             hits.length === 0
@@ -174,10 +169,24 @@ export async function runMcpServer(): Promise<void> {
           );
         }
         case "write_file": {
-          const result = await operations.writeNote(
-            String(args.path ?? ""),
-            String(args.content ?? ""),
-          );
+          // A note that already exists is never overwritten by the agent. The
+          // prompt asks for an append, and this is the code that makes the
+          // ask true: an overwrite of a note the owner may be editing in
+          // Obsidian is exactly the loss the guard cannot undo.
+          const target = String(args.path ?? "");
+          const existing = await operations.readFile(target).catch(() => null);
+          if (existing) {
+            return {
+              content: [
+                {
+                  type: "text" as const,
+                  text: `The note ${existing.relativePath} exists already. Use the append tool to add to it: an existing note is never overwritten.`,
+                },
+              ],
+              isError: true,
+            };
+          }
+          const result = await operations.writeNote(target, String(args.content ?? ""));
           return text(
             `Saved ${result.relativePath} (${result.action}, ${result.bytes} bytes, verified: ${result.verified}).`,
           );

@@ -1,4 +1,4 @@
-﻿import { mkdir } from "node:fs/promises";
+import { mkdir } from "node:fs/promises";
 import { createServer, type IncomingMessage, type ServerResponse } from "node:http";
 import path from "node:path";
 import { desc } from "drizzle-orm";
@@ -19,7 +19,7 @@ import { localDate, previousDay } from "./daily/time.js";
 import { createDatabase } from "./db/index.js";
 import { dailySummaries, notesLog, processedUpdates, undoLog } from "./db/schema.js";
 import { healthReport } from "./health.js";
-import { HermesClient } from "./hermes/client.js";
+import { HermesClient, NOTE_TOOLSETS } from "./hermes/client.js";
 import { type Language, messages } from "./i18n/index.js";
 import { createLlmProxy } from "./llm/proxy.js";
 import { Transcriber } from "./llm/transcribe.js";
@@ -113,6 +113,10 @@ async function main(): Promise<void> {
     maxTurns: config.hermes.maxTurns,
     workspace: config.hermes.workspace,
     env: process.env,
+    // The note run works through the vault MCP server and the web tools. It
+    // has no shell and no direct file tools: the vault server is the only way
+    // to a note, and it is the only thing that writes one safely.
+    toolsets: NOTE_TOOLSETS,
     logger: logger.child("hermes"),
   });
 

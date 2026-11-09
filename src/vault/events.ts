@@ -11,6 +11,15 @@ export interface VaultEvent {
   at: string;
   bytes: number;
   source: "agent" | "fallback";
+  /**
+   * The job that made the write.
+   *
+   * A write belongs to the run that made it, and only that run may take it
+   * back. The time of the write is not an identity: two jobs run one after
+   * another, and a window wide enough to catch the writes of one of them
+   * catches the writes of the other as well.
+   */
+  runId?: string;
   /** The appended block, so the append can be undone later. */
   block?: string;
   /** The content before an overwrite, so the overwrite can be undone later. */

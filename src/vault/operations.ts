@@ -258,7 +258,7 @@ export class VaultOperations {
   async writeNote(
     targetPath: string,
     content: string,
-    options: { source?: VaultEvent["source"]; autoLink?: boolean } = {},
+    options: { source?: VaultEvent["source"]; autoLink?: boolean; runId?: string } = {},
   ): Promise<WriteResult> {
     const absolute = resolveInsideVault(this.vaultRoot, targetPath);
     const titles = options.autoLink === false ? [] : await this.cachedTitles();
@@ -273,6 +273,7 @@ export class VaultOperations {
     this.invalidateTitles();
     await this.record(result, options.source ?? "agent", {
       previous: result.action === "overwrite" ? previous : undefined,
+      runId: options.runId,
     });
     return result;
   }
@@ -281,12 +282,15 @@ export class VaultOperations {
   async appendNote(
     targetPath: string,
     block: string,
-    options: { source?: VaultEvent["source"] } = {},
+    options: { source?: VaultEvent["source"]; runId?: string } = {},
   ): Promise<WriteResult> {
     const absolute = resolveInsideVault(this.vaultRoot, targetPath);
     const normalized = normalizeDashes(block);
     const result = await this.deps.guard.append(absolute, normalized);
-    await this.record(result, options.source ?? "agent", { block: normalized });
+    await this.record(result, options.source ?? "agent", {
+      block: normalized,
+      runId: options.runId,
+    });
     return result;
   }
 
@@ -399,7 +403,7 @@ export class VaultOperations {
   private async record(
     result: WriteResult,
     source: VaultEvent["source"],
-    extra: { block?: string; previous?: string } = {},
+    extra: { block?: string; previous?: string; runId?: string } = {},
   ): Promise<void> {
     const event: VaultEvent = {
       action: result.action,
@@ -408,6 +412,7 @@ export class VaultOperations {
       at: new Date().toISOString(),
       bytes: result.bytes,
       source,
+      ...(extra.runId ? { runId: extra.runId } : {}),
       ...(extra.block ? { block: extra.block } : {}),
       ...(extra.previous !== undefined ? { previous: extra.previous } : {}),
     };

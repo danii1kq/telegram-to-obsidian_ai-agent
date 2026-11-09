@@ -35,22 +35,38 @@ interface DayNote {
 
 const MAX_EXCERPT = 700;
 
-/** The pause before the writes of the agent are looked at, in milliseconds. */
-const STRAY_WRITE_GRACE_MS = 2500;
+/**
+ * The toolsets of the agent that writes the summary.
+ *
+ * The summary is a text about notes that already exist, so the agent needs no
+ * tool that touches the vault. The restriction is not a line in the prompt:
+ * the prompt is a request, the toolset is the permission. `safe` is the name
+ * Hermes uses for the set without the file and the terminal tools.
+ */
+const SUMMARY_TOOLSETS = "safe";
 
 /**
- * Undoes the writes the agent did while it made the summary.
+ * The writes the agent did while it made the summary, taken back.
  *
- * The agent has the tools of the vault, so it can write a note even when it
- * was only asked for a text. Every write of the run is taken back here.
+ * This is kept for the callers that know the exact run: an event is only
+ * taken back when its `runId` is the one of the run that is being undone. An
+ * event without a run id is never touched, because there is no way to tell
+ * whose it is.
+ *
+ * The summary itself does not use it any more. The agent of the summary has no
+ * write tools, so there is nothing to take back, and a revert that guesses by
+ * time deletes the notes of other jobs: a note written a second before the
+ * summary starts is inside any window that is wide enough to catch a stray
+ * write of the summary.
  */
 export async function revertStrayWrites(
   vault: VaultOperations,
   eventsFile: string,
-  since: number,
+  runId: string,
 ): Promise<number> {
+  if (!runId) return 0;
   const events = await readEvents(eventsFile);
-  const stray = events.filter((event) => Date.parse(event.at) >= since);
+  const stray = events.filter((event) => event.runId === runId);
   let reverted = 0;
 
   for (const event of [...stray].reverse()) {
@@ -70,11 +86,6 @@ export async function revertStrayWrites(
     }
   }
   return reverted;
-}
-
-/** Waits a moment. */
-function sleep(milliseconds: number): Promise<void> {
-  return new Promise((resolve) => setTimeout(resolve, milliseconds));
 }
 
 /**
@@ -105,27 +116,14 @@ export async function runDailySummary(
   }
 
   const prompt = buildSummaryPrompt(day, notes, language);
-  const startedAt = Date.now();
-  const run = await deps.hermes.run(prompt, { toolsets: "safe" });
+  // The agent of the summary has no tool that writes: the summary is a text
+  // about notes that already exist. The restriction is the toolset, not a
+  // line in the prompt, and there is no revert afterwards: a revert that
+  // picks the writes by time deletes the notes of the jobs around it.
+  const run = await deps.hermes.run(prompt, { toolsets: SUMMARY_TOOLSETS });
   if (!run.ok) {
     deps.logger.error("the agent did not make the summary", { day, error: run.error });
     return null;
-  }
-
-  // The agent of the summary may write into the vault, it must not: the only
-  // file the summary changes is the file of the month. Every write of the
-  // agent is undone here.
-  await sleep(STRAY_WRITE_GRACE_MS);
-  const reverted = await revertStrayWrites(
-    deps.vault,
-    deps.config.vault.eventsFile,
-    startedAt - 1000,
-  );
-  if (reverted > 0) {
-    deps.logger.warn("the agent wrote into the vault, the writes were undone", {
-      day,
-      reverted,
-    });
   }
 
   const summary = cleanSummary(run.text);

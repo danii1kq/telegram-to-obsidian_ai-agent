@@ -6,6 +6,7 @@ import { type Bot, InlineKeyboard } from "grammy";
 import { buildStatus, listInbox, searchNotes, undoLast } from "./bot/actions.js";
 import { AttachmentTooBigError, downloadAttachment } from "./bot/attachments.js";
 import { createBot } from "./bot/bot.js";
+import { Inbox } from "./bot/inbox.js";
 import { MessageQueue } from "./bot/queue.js";
 import { loadConfig } from "./config.js";
 import { startDailyScheduler } from "./daily/scheduler.js";
@@ -17,7 +18,7 @@ import {
 } from "./daily/summary.js";
 import { localDate, previousDay } from "./daily/time.js";
 import { createDatabase } from "./db/index.js";
-import { dailySummaries, notesLog, processedUpdates, undoLog } from "./db/schema.js";
+import { dailySummaries, notesLog, undoLog } from "./db/schema.js";
 import { healthReport } from "./health.js";
 import { HermesClient, NOTE_TOOLSETS } from "./hermes/client.js";
 import { type Language, messages } from "./i18n/index.js";
@@ -121,6 +122,11 @@ async function main(): Promise<void> {
   });
 
   const queue = new MessageQueue(logger.child("queue"));
+
+  // The inbox is the durable half of the queue: a message is a row in the
+  // database before Telegram gets an answer, and the queue in memory only runs
+  // the rows. A restart finds them again.
+  const inbox = new Inbox({ db, logger: logger.child("inbox") });
 
   const dailyDeps = {
     config,
@@ -390,6 +396,7 @@ async function main(): Promise<void> {
         queueSize: () => queue.size,
         lastMessageAt: () => lastMessageAt,
         startedAt,
+        runningJobAgeMs: () => inbox.oldestRunningAgeMs(),
       });
       sendJson(response, report.ok ? 200 : 503, report);
       return;
@@ -413,19 +420,44 @@ async function main(): Promise<void> {
       return;
     }
 
+    let update: Parameters<typeof bot.handleUpdate>[0];
     try {
       const body = await readBody(request);
-      const update = JSON.parse(body) as Parameters<typeof bot.handleUpdate>[0];
+      update = JSON.parse(body) as Parameters<typeof bot.handleUpdate>[0];
+    } catch (error) {
+      logger.error("the webhook call failed", { error: String(error) });
+      sendJson(response, 400, { ok: false });
+      return;
+    }
 
-      // Telegram sends an update again when the answer did not arrive in time.
-      // A message that was already handled must not be written twice.
-      const updateId = typeof update.update_id === "number" ? String(update.update_id) : "";
-      if (updateId && !(await claimUpdate(updateId))) {
-        logger.info("an update that was already handled came again", { updateId });
-        sendJson(response, 200, { ok: true, duplicate: true });
+    const updateId = typeof update.update_id === "number" ? String(update.update_id) : "";
+
+    // The update is written to the database before Telegram gets an answer.
+    // An answer of 200 is a promise that the message will not be lost, and a
+    // promise that only an in-memory queue backs up is not one: a restart
+    // between the answer and the write loses the message for good.
+    if (updateId) {
+      try {
+        const accepted = await inbox.accept({
+          updateId,
+          payload: JSON.stringify(update),
+          telegramUserId: readUserId(update),
+        });
+        if (!accepted.created) {
+          logger.info("an update that was already accepted came again", { updateId });
+          sendJson(response, 200, { ok: true, duplicate: true });
+          return;
+        }
+      } catch (error) {
+        // Without the row there is no promise to keep, so the answer is a
+        // failure and Telegram sends the update again.
+        logger.error("could not accept the update", { updateId, error: String(error) });
+        sendJson(response, 503, { ok: false, error: "the update was not accepted" });
         return;
       }
+    }
 
+    try {
       await bot.handleUpdate(update);
       sendJson(response, 200, { ok: true });
     } catch (error) {
@@ -434,26 +466,6 @@ async function main(): Promise<void> {
     }
   }
 
-  /**
-   * Remembers an update id and says whether it is new.
-   *
-   * The table is the one the schema already had for this purpose. A failure of
-   * the database must not drop a message of the owner, so an update whose id
-   * could not be written is handled anyway.
-   */
-  async function claimUpdate(updateId: string): Promise<boolean> {
-    try {
-      const inserted = await db
-        .insert(processedUpdates)
-        .values({ updateId, processedAt: new Date().toISOString() })
-        .onConflictDoNothing()
-        .returning({ updateId: processedUpdates.updateId });
-      return inserted.length > 0;
-    } catch (error) {
-      logger.warn("could not remember the update id", { updateId, error: String(error) });
-      return true;
-    }
-  }
   await new Promise<void>((resolve) => {
     healthServer.listen(config.health.port, config.health.host, () => {
       logger.info("health endpoint listening", {
@@ -464,11 +476,34 @@ async function main(): Promise<void> {
     });
   });
 
+  /**
+   * Stops the bot within a bounded time.
+   *
+   * The jobs that are already running are given a moment to finish, because a
+   * write that is half done is worse than a slow stop. A job that does not
+   * finish in time is left in the database as running, and the next start
+   * recovers it: the pipeline reads the vault to decide what actually
+   * happened, so a write that landed is reported instead of repeated.
+   */
+  let stopping = false;
   const stop = async (signal: string) => {
+    if (stopping) return;
+    stopping = true;
     logger.info("stopping", { signal });
+
+    const deadline = Date.now() + SHUTDOWN_GRACE_MS;
     scheduler.stop();
     watcher.stop();
-    await proxy.stop();
+
+    // The queue drains on its own; the wait below is what bounds it.
+    while (queue.size > 0 && Date.now() < deadline) {
+      await new Promise((resolve) => setTimeout(resolve, 100));
+    }
+    if (queue.size > 0) {
+      logger.warn("the queue did not drain before the deadline", { left: queue.size });
+    }
+
+    await proxy.stop().catch(() => undefined);
     healthServer.close();
     client.close();
     process.exit(0);
@@ -485,6 +520,48 @@ async function main(): Promise<void> {
       logger.error("could not set the menu button", { error: String(error) });
     }
   }
+
+  /**
+   * Runs a job that was found in the database.
+   *
+   * The payload is the update of Telegram as it came, so the bot handles it
+   * the same way it handles a live one: the same middleware, the same
+   * allowlist, the same pipeline. The job is marked as running first, so a
+   * second start does not pick it up again, and its outcome is written back.
+   */
+  async function runRecoveredJob(job: { id: number; payload: string }): Promise<void> {
+    const started = await inbox.start(job.id);
+    if (!started) return;
+
+    try {
+      const update = JSON.parse(job.payload) as Parameters<typeof bot.handleUpdate>[0];
+      await bot.handleUpdate(update);
+      await inbox.succeed(job.id);
+    } catch (error) {
+      const result = await inbox.fail(job.id, String(error));
+      logger.error("a recovered job failed", {
+        jobId: job.id,
+        retry: result.retry,
+        error: String(error),
+      });
+    }
+  }
+
+  // The jobs that were running when the process stopped are put back into the
+  // queue before anything else runs: the process that ran them is gone, and
+  // nothing else will ever finish them. The pipeline reads the vault to decide
+  // what actually happened, so a job whose write landed is reported as done
+  // instead of being written twice.
+  void inbox
+    .recover()
+    .then((recovered) => {
+      for (const job of recovered) {
+        void queue.push(() => runRecoveredJob(job));
+      }
+    })
+    .catch((error) => {
+      logger.error("could not recover the jobs of the previous run", { error: String(error) });
+    });
 
   // The summary of the days that were missed while the bot was down.
   void queue.push(async () => {
@@ -557,7 +634,7 @@ async function startPolling(bot: Bot, logger: Logger): Promise<void> {
     try {
       await bot.start({
         onStart: (info) => logger.info("the bot is polling Telegram", { username: info.username }),
-        drop_pending_updates: first,
+        drop_pending_updates: false,
       });
       return;
     } catch (error) {
@@ -581,6 +658,15 @@ main().catch((error) => {
 const MAX_WEBHOOK_BYTES = 1024 * 1024;
 
 /**
+ * How long a stop waits for the jobs that are already running.
+ *
+ * A write that is half done is worse than a slow stop, but a stop that never
+ * ends is worse than both: Docker sends SIGKILL after its own timeout, and the
+ * job would be lost without the recovery of the next start.
+ */
+const SHUTDOWN_GRACE_MS = 20_000;
+
+/**
  * Writes a JSON answer once.
  *
  * A handler that answers and then fails in a later step must not write a
@@ -588,6 +674,22 @@ const MAX_WEBHOOK_BYTES = 1024 * 1024;
  * inside the error path of the first. The socket may also be gone, because the
  * client hung up while the answer was being prepared.
  */
+/**
+ * The Telegram id of the person behind an update, when it carries one.
+ *
+ * It is only used for the log and for the retention of the jobs: the access is
+ * decided by the middleware of the bot, not by this value.
+ */
+function readUserId(update: unknown): string | undefined {
+  if (!update || typeof update !== "object") return undefined;
+  const message = (update as { message?: unknown }).message;
+  if (!message || typeof message !== "object") return undefined;
+  const from = (message as { from?: unknown }).from;
+  if (!from || typeof from !== "object") return undefined;
+  const id = (from as { id?: unknown }).id;
+  return typeof id === "number" ? String(id) : undefined;
+}
+
 function sendJson(response: ServerResponse, status: number, payload: unknown): void {
   if (response.headersSent || response.writableEnded || response.destroyed) return;
   const body = JSON.stringify(payload);

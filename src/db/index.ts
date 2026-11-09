@@ -69,6 +69,22 @@ export async function ensureSchema(client: Client): Promise<void> {
       updated_at TEXT NOT NULL
     )`,
   );
+  await client.execute(
+    `CREATE TABLE IF NOT EXISTS jobs (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      update_id TEXT NOT NULL UNIQUE,
+      payload TEXT NOT NULL,
+      state TEXT NOT NULL DEFAULT 'queued',
+      attempts INTEGER NOT NULL DEFAULT 0,
+      created_at TEXT NOT NULL,
+      started_at TEXT,
+      finished_at TEXT,
+      error TEXT,
+      heartbeat_at TEXT,
+      telegram_user_id TEXT
+    )`,
+  );
   await client.execute("CREATE INDEX IF NOT EXISTS notes_log_created_at ON notes_log (created_at)");
   await client.execute("CREATE INDEX IF NOT EXISTS undo_log_created_at ON undo_log (created_at)");
+  await client.execute("CREATE INDEX IF NOT EXISTS jobs_state ON jobs (state, id)");
 }

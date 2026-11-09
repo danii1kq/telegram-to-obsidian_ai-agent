@@ -51,6 +51,30 @@ export const dailySummaries = sqliteTable("daily_summaries", {
 });
 
 /**
+ * The jobs of the bot: one row per message of the owner.
+ *
+ * The row is written before the webhook answers Telegram, so an accepted
+ * message is a row on disk. The queue in memory only runs the rows; a restart
+ * finds them again. The update id is unique, so a repeated update of Telegram
+ * is not a second job.
+ */
+export const jobs = sqliteTable("jobs", {
+  id: integer("id").primaryKey({ autoIncrement: true }),
+  updateId: text("update_id").notNull().unique(),
+  payload: text("payload").notNull(),
+  /** queued, running, succeeded or failed. */
+  state: text("state").notNull().default("queued"),
+  attempts: integer("attempts").notNull().default(0),
+  createdAt: text("created_at").notNull(),
+  startedAt: text("started_at"),
+  finishedAt: text("finished_at"),
+  error: text("error"),
+  /** The last sign of life of the run, so a stuck job is visible. */
+  heartbeatAt: text("heartbeat_at"),
+  telegramUserId: text("telegram_user_id"),
+});
+
+/**
  * The settings of every user of the bot, the language for now.
  */
 export const userSettings = sqliteTable("user_settings", {
@@ -60,4 +84,11 @@ export const userSettings = sqliteTable("user_settings", {
   updatedAt: text("updated_at").notNull(),
 });
 
-export const schema = { notesLog, processedUpdates, undoLog, dailySummaries, userSettings };
+export const schema = {
+  notesLog,
+  processedUpdates,
+  undoLog,
+  dailySummaries,
+  userSettings,
+  jobs,
+};

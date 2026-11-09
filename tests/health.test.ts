@@ -101,4 +101,57 @@ describe("the health of the process", () => {
     expect(report.checks.queue.detail).toContain("500");
     client.close();
   });
+
+  it("is ok when no job is running", async () => {
+    const { vault, db, client } = await makeWorld();
+    const report = await healthReport({
+      db,
+      vault,
+      logger,
+      queueSize: () => 0,
+      lastMessageAt: () => null,
+      startedAt: Date.now(),
+      runningJobAgeMs: async () => null,
+    });
+
+    expect(report.ok).toBe(true);
+    expect(report.checks.job.ok).toBe(true);
+    client.close();
+  });
+
+  it("is ok while the running job is still moving", async () => {
+    const { vault, db, client } = await makeWorld();
+    const report = await healthReport({
+      db,
+      vault,
+      logger,
+      queueSize: () => 0,
+      lastMessageAt: () => null,
+      startedAt: Date.now(),
+      runningJobAgeMs: async () => 30_000,
+    });
+
+    expect(report.ok).toBe(true);
+    client.close();
+  });
+
+  it("is not ok when the running job has not moved for too long", async () => {
+    const { vault, db, client } = await makeWorld();
+    // A short queue and a live database look fine; the job is the thing that
+    // stopped, and a green check would hide it.
+    const report = await healthReport({
+      db,
+      vault,
+      logger,
+      queueSize: () => 0,
+      lastMessageAt: () => null,
+      startedAt: Date.now(),
+      runningJobAgeMs: async () => 60 * 60_000,
+    });
+
+    expect(report.ok).toBe(false);
+    expect(report.checks.job.ok).toBe(false);
+    expect(report.checks.job.detail).toContain("has not moved");
+    client.close();
+  });
 });

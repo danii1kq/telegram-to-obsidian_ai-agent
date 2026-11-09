@@ -1,5 +1,6 @@
 import { readdir } from "node:fs/promises";
 import { sql } from "drizzle-orm";
+import { STUCK_JOB_MS } from "./bot/inbox.js";
 import type { Database } from "./db/index.js";
 import type { Logger } from "./logger.js";
 import type { VaultOperations } from "./vault/operations.js";
@@ -23,6 +24,14 @@ export interface HealthDeps {
   lastMessageAt: () => number | null;
   /** The moment the process started. */
   startedAt: number;
+  /**
+   * The age of the oldest job that is running, in milliseconds.
+   *
+   * A job that has been running for an hour with no sign of life is a stuck
+   * process, and a health check that only looks at the size of the queue stays
+   * green while nothing moves.
+   */
+  runningJobAgeMs?: () => Promise<number | null>;
   /** The current moment, for the tests. */
   now?: () => number;
 }
@@ -35,6 +44,7 @@ export interface HealthReport {
     database: CheckResult;
     vault: CheckResult;
     queue: CheckResult;
+    job: CheckResult;
   };
 }
 
@@ -81,13 +91,32 @@ function checkQueue(size: number): CheckResult {
   return { ok: false, detail: `${size} messages are waiting` };
 }
 
+/**
+ * The running job is moving.
+ *
+ * A job that has not sent a heartbeat for longer than the limit is stuck: the
+ * process is alive, the queue is short, and nothing is being written. That is
+ * exactly the state a health check has to report, because the container is
+ * restarted on a failed check and a restart is what unsticks it.
+ */
+function checkJob(ageMs: number | null): CheckResult {
+  if (ageMs === null) return { ok: true };
+  if (ageMs <= STUCK_JOB_MS) return { ok: true, detail: `${Math.round(ageMs / 1000)} s` };
+  return { ok: false, detail: `the running job has not moved for ${Math.round(ageMs / 1000)} s` };
+}
+
 /** Builds the report of one health call. */
 export async function healthReport(deps: HealthDeps): Promise<HealthReport> {
   const now = deps.now?.() ?? Date.now();
-  const [database, vault] = await Promise.all([checkDatabase(deps.db), checkVault(deps.vault)]);
+  const [database, vault, jobAge] = await Promise.all([
+    checkDatabase(deps.db),
+    checkVault(deps.vault),
+    deps.runningJobAgeMs ? deps.runningJobAgeMs().catch(() => null) : Promise.resolve(null),
+  ]);
   const queue = checkQueue(deps.queueSize());
+  const job = checkJob(jobAge);
 
-  const checks = { database, vault, queue };
+  const checks = { database, vault, queue, job };
   const ok = Object.values(checks).every((check) => check.ok);
 
   if (!ok) {
@@ -95,6 +124,7 @@ export async function healthReport(deps: HealthDeps): Promise<HealthReport> {
       database: database.ok ? "ok" : database.detail,
       vault: vault.ok ? "ok" : vault.detail,
       queue: queue.ok ? "ok" : queue.detail,
+      job: job.ok ? "ok" : job.detail,
     });
   }
 

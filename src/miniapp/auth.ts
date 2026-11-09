@@ -70,12 +70,36 @@ export function validateInitData(
   return { ok: false, error: "the signature of the init data does not match" };
 }
 
-/** Reads the user of the Mini App. */
+/**
+ * Reads the user of the Mini App.
+ *
+ * The value comes from a string that Telegram signed, so it is well formed in
+ * practice. It is still read field by field: the signature proves the string
+ * came from Telegram, and the id is the only thing the access check has to go
+ * on, so a missing or non numeric id must not turn into a user.
+ */
 function readUser(raw: string | null): TelegramUser | undefined {
   if (!raw) return undefined;
+  let parsed: unknown;
   try {
-    return JSON.parse(raw) as TelegramUser;
+    parsed = JSON.parse(raw);
   } catch {
     return undefined;
   }
+  if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) return undefined;
+
+  const fields = parsed as Record<string, unknown>;
+  const id = fields.id;
+  if (typeof id !== "number" || !Number.isInteger(id)) return undefined;
+
+  const text = (value: unknown): string | undefined =>
+    typeof value === "string" && value.length > 0 ? value : undefined;
+
+  return {
+    id,
+    firstName: text(fields.first_name),
+    lastName: text(fields.last_name),
+    username: text(fields.username),
+    languageCode: text(fields.language_code),
+  };
 }

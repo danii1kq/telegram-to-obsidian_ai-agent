@@ -89,6 +89,8 @@ async function makeMiniApp() {
     browserToken: "secret-token",
     logger,
     webRoot: path.join(root, "web"),
+    allowedUserIds: new Set([42]),
+    ownerId: 42,
   });
 
   return { handle, root, vault };
@@ -204,7 +206,10 @@ describe("the safety of the mini app", () => {
     );
 
     const response = fakeResponse();
-    await handle(fakeRequest("/api/file?path=attachments/page.html&token=secret-token"), response);
+    await handle(
+      fakeRequest("/api/file?path=attachments/page.html", { "x-auth-token": "secret-token" }),
+      response,
+    );
 
     expect(response.statusCode).toBe(200);
     expect(response.headers["content-type"]).toBe("application/octet-stream");
@@ -226,6 +231,7 @@ describe("the api of the mini app", () => {
     const initData = signInitData({
       auth_date: String(Math.floor(Date.now() / 1000)),
       query_id: "abc",
+      user: JSON.stringify({ id: 42, first_name: "Daniil" }),
     });
     const response = fakeResponse();
     await handle(fakeRequest("/api/notes", { "x-telegram-init-data": initData }), response);
@@ -238,7 +244,7 @@ describe("the api of the mini app", () => {
   it("answers a request with the token of the owner", async () => {
     const { handle } = await makeMiniApp();
     const response = fakeResponse();
-    await handle(fakeRequest("/api/notes?token=secret-token"), response);
+    await handle(fakeRequest("/api/notes", { "x-auth-token": "secret-token" }), response);
 
     expect(response.statusCode).toBe(200);
     expect(JSON.parse(response.body()).notes).toHaveLength(1);
@@ -247,7 +253,10 @@ describe("the api of the mini app", () => {
   it("searches the notes", async () => {
     const { handle } = await makeMiniApp();
     const response = fakeResponse();
-    await handle(fakeRequest("/api/search?q=business&token=secret-token"), response);
+    await handle(
+      fakeRequest("/api/search?q=business", { "x-auth-token": "secret-token" }),
+      response,
+    );
 
     const payload = JSON.parse(response.body()) as { hits: { title: string }[] };
     expect(payload.hits[0]?.title).toBe("Ideas");
@@ -256,7 +265,10 @@ describe("the api of the mini app", () => {
   it("opens a note", async () => {
     const { handle } = await makeMiniApp();
     const response = fakeResponse();
-    await handle(fakeRequest("/api/note?path=Ideas.md&token=secret-token"), response);
+    await handle(
+      fakeRequest("/api/note?path=Ideas.md", { "x-auth-token": "secret-token" }),
+      response,
+    );
 
     const payload = JSON.parse(response.body()) as { note: { content: string } };
     expect(payload.note.content).toContain("an idea");
@@ -267,6 +279,7 @@ describe("the api of the mini app", () => {
     const initData = signInitData({
       auth_date: String(Math.floor(Date.now() / 1000)),
       query_id: "AAE_test",
+      user: JSON.stringify({ id: 42, first_name: "Daniil" }),
     });
     const response = fakeResponse();
     await handle(fakeRequest("/api/notes", { "x-telegram-init-data": initData }), response);
@@ -280,7 +293,7 @@ describe("the api of the mini app", () => {
   it("gives the notes with the path, the app works with it", async () => {
     const { handle } = await makeMiniApp();
     const response = fakeResponse();
-    await handle(fakeRequest("/api/notes?token=secret-token"), response);
+    await handle(fakeRequest("/api/notes", { "x-auth-token": "secret-token" }), response);
 
     const payload = JSON.parse(response.body()) as {
       notes: Array<{ path: string; title: string; date: string; tags: string[] }>;
@@ -298,7 +311,10 @@ describe("the api of the mini app", () => {
     }
 
     const first = fakeResponse();
-    await handle(fakeRequest("/api/notes?limit=2&offset=0&token=secret-token"), first);
+    await handle(
+      fakeRequest("/api/notes?limit=2&offset=0", { "x-auth-token": "secret-token" }),
+      first,
+    );
     const firstPage = JSON.parse(first.body()) as {
       notes: Array<{ path: string }>;
       total: number;
@@ -309,7 +325,10 @@ describe("the api of the mini app", () => {
     expect(firstPage.hasMore).toBe(true);
 
     const last = fakeResponse();
-    await handle(fakeRequest("/api/notes?limit=2&offset=4&token=secret-token"), last);
+    await handle(
+      fakeRequest("/api/notes?limit=2&offset=4", { "x-auth-token": "secret-token" }),
+      last,
+    );
     const lastPage = JSON.parse(last.body()) as {
       notes: Array<{ path: string }>;
       total: number;

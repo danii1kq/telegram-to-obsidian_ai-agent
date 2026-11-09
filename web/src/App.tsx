@@ -1,11 +1,11 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import {
+  currentBootstrapToken,
   exchangeToken,
   fetchConfig,
   fetchNote,
   fetchNotes,
   fetchSummaries,
-  fileToken,
   type NoteSummary,
   type SearchHit,
   type SummaryEntry,
@@ -113,9 +113,11 @@ export default function App() {
   }, [loadNotes]);
 
   // The token of the owner is exchanged for a session and taken out of the
-  // address, so it does not stay in the history of the browser.
+  // address, so it does not stay in the history of the browser. Once the
+  // session is opened the token is dropped from memory as well: from then on
+  // the cookie carries the access and no request repeats the token.
   useEffect(() => {
-    const token = fileToken;
+    const token = currentBootstrapToken();
     if (!token) return;
     void exchangeToken(token).then((ok) => {
       if (!ok) return;
@@ -471,7 +473,7 @@ function NoteView({
     if (!content) return "";
     // The frontmatter of the note is not shown to the reader.
     const body = content.replace(/^---\r?\n[\s\S]*?\r?\n---\r?\n?/, "");
-    return renderMarkdown(body, fileToken);
+    return renderMarkdown(body);
   }, [content]);
 
   return (

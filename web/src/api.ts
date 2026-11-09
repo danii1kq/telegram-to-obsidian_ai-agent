@@ -29,14 +29,32 @@ export interface SummaryEntry {
 
 import type { Language } from "./texts";
 
-/** The token of the owner, when the app is opened in a browser. */
-export const fileToken = new URLSearchParams(window.location.search).get("token") ?? "";
+/**
+ * The token of the owner, when the app is opened in a browser.
+ *
+ * It is read once and then forgotten: the page exchanges it for a session
+ * cookie on the first load, and from that moment the cookie carries the
+ * access. A token that keeps travelling in headers and in image addresses is
+ * a long lived credential in every log and every cache that sees a request,
+ * so the exchange has to end its use, not just hide it from the address bar.
+ */
+let bootstrapToken = new URLSearchParams(window.location.search).get("token") ?? "";
+
+/** The token of the owner while it has not been exchanged yet. */
+export function currentBootstrapToken(): string {
+  return bootstrapToken;
+}
+
+/** Forgets the token of the owner, the session cookie takes over. */
+export function forgetBootstrapToken(): void {
+  bootstrapToken = "";
+}
 
 function headers(): Record<string, string> {
   const result: Record<string, string> = { "content-type": "application/json" };
   const initData = window.Telegram?.WebApp?.initData;
   if (initData) result["x-telegram-init-data"] = initData;
-  if (fileToken) result["x-auth-token"] = fileToken;
+  if (bootstrapToken) result["x-auth-token"] = bootstrapToken;
   return result;
 }
 
@@ -96,7 +114,8 @@ export async function fetchConfig(): Promise<{ botUsername: string; language: La
  *
  * The token is in the address of the page, so it is given to the server once
  * and taken out of the address: from then on the session cookie carries the
- * access.
+ * access. The token is also dropped from memory, so no later request and no
+ * image address carries it again.
  */
 export async function exchangeToken(token: string): Promise<boolean> {
   try {
@@ -105,7 +124,9 @@ export async function exchangeToken(token: string): Promise<boolean> {
       headers: { "content-type": "application/json" },
       body: JSON.stringify({ token }),
     });
-    return response.ok;
+    if (!response.ok) return false;
+    forgetBootstrapToken();
+    return true;
   } catch {
     return false;
   }

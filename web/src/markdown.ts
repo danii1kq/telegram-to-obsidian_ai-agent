@@ -43,7 +43,7 @@ function escapeHtml(text: string): string {
 }
 
 /** The inline marks of a line of text. */
-function renderInline(text: string, fileToken: string): string {
+function renderInline(text: string): string {
   const placeholders: string[] = [];
   const masked = text.replace(
     /!\[\[([^\]]+)\]\]|\[\[([^\]]+)\]\]|`([^`]+)`/g,
@@ -54,9 +54,14 @@ function renderInline(text: string, fileToken: string): string {
           name.toLowerCase().endsWith(extension),
         );
         if (isImage) {
+          // The picture goes through a placeholder like every other inline
+          // mark. Returning the tag itself put it into the text that is
+          // escaped next, so the tag arrived at the sanitizer as `&lt;img&gt;`
+          // and the note showed the markup instead of the picture.
           const url = `/api/file?path=${encodeURIComponent(`attachments/${name}`)}`;
-          const token = fileToken ? `&token=${encodeURIComponent(fileToken)}` : "";
-          return `<img src="${url}${token}" alt="${escapeHtml(name)}" loading="lazy" />`;
+          const html = `<img src="${url}" alt="${escapeHtml(name)}" loading="lazy" />`;
+          placeholders.push(html);
+          return `\u0000${placeholders.length - 1}\u0000`;
         }
         const link = `<a href="#" class="embed">${escapeHtml(name)}</a>`;
         placeholders.push(link);
@@ -85,8 +90,8 @@ function renderInline(text: string, fileToken: string): string {
 }
 
 /** Turns the text of a note into html. */
-export function renderMarkdown(source: string, fileToken = ""): string {
-  const html = buildHtml(source, fileToken);
+export function renderMarkdown(source: string): string {
+  const html = buildHtml(source);
   // The last line of defence: only the marks of a note survive.
   return DOMPurify.sanitize(html, {
     ALLOWED_TAGS,
@@ -97,7 +102,7 @@ export function renderMarkdown(source: string, fileToken = ""): string {
   });
 }
 
-function buildHtml(source: string, fileToken = ""): string {
+function buildHtml(source: string): string {
   const lines = source.replace(/\r\n/g, "\n").split("\n");
   const blocks: string[] = [];
   let paragraph: string[] = [];
@@ -109,14 +114,14 @@ function buildHtml(source: string, fileToken = ""): string {
 
   const flushParagraph = () => {
     if (paragraph.length === 0) return;
-    blocks.push(`<p>${paragraph.map((line) => renderInline(line, fileToken)).join("<br />")}</p>`);
+    blocks.push(`<p>${paragraph.map((line) => renderInline(line)).join("<br />")}</p>`);
     paragraph = [];
   };
 
   const flushList = () => {
     if (list.length === 0) return;
     const tag = ordered ? "ol" : "ul";
-    const items = list.map((item) => `<li>${renderInline(item, fileToken)}</li>`).join("");
+    const items = list.map((item) => `<li>${renderInline(item)}</li>`).join("");
     blocks.push(`<${tag}>${items}</${tag}>`);
     list = [];
   };
@@ -124,7 +129,7 @@ function buildHtml(source: string, fileToken = ""): string {
   const flushQuote = () => {
     if (quote.length === 0) return;
     blocks.push(
-      `<blockquote>${quote.map((line) => renderInline(line, fileToken)).join("<br />")}</blockquote>`,
+      `<blockquote>${quote.map((line) => renderInline(line)).join("<br />")}</blockquote>`,
     );
     quote = [];
   };
@@ -160,7 +165,7 @@ function buildHtml(source: string, fileToken = ""): string {
     if (heading) {
       flushAll();
       const level = Math.min(3, (heading[1] ?? "#").length);
-      blocks.push(`<h${level}>${renderInline(heading[2] ?? "", fileToken)}</h${level}>`);
+      blocks.push(`<h${level}>${renderInline(heading[2] ?? "")}</h${level}>`);
       continue;
     }
 

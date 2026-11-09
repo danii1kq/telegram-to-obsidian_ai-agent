@@ -331,6 +331,9 @@ async function main(): Promise<void> {
     language: (userId: number) => getLanguage(userId),
     defaultLanguage: config.language.owner,
     ownerId: ownerChatId,
+    // The signature of Telegram says where the data came from, not who may
+    // read the notes: the list of the allowed users is the second half.
+    allowedUserIds: config.telegram.allowedUserIds,
     summaries: async () => {
       const rows = await db
         .select()
@@ -342,36 +345,56 @@ async function main(): Promise<void> {
   });
 
   const healthServer = createServer((request, response) => {
-    const url = new URL(request.url ?? "/", "http://localhost");
+    // The parsing of the request target is the first thing that touches a
+    // value from the network, and it can throw: `GET //% HTTP/1.1` is accepted
+    // by the parser of Node and then rejected by `new URL`. An exception here
+    // used to leave the server, which ends the process on an uncaught error.
+    void handleRequest(request, response).catch((error) => {
+      logger.error("the request could not be answered", { error: String(error) });
+      sendPlain(response, 500, "the server could not answer");
+    });
+  });
+
+  /** Routes one request; every branch answers exactly once. */
+  async function handleRequest(request: IncomingMessage, response: ServerResponse): Promise<void> {
+    let url: URL;
+    try {
+      url = new URL(request.url ?? "/", "http://localhost");
+    } catch {
+      // A request target that is not a URL is a bad request, not a crash.
+      logger.warn("a request came with a target that is not a url", {
+        method: request.method,
+        length: request.url?.length ?? 0,
+      });
+      sendPlain(response, 400, "bad request");
+      return;
+    }
 
     // The webhook of Telegram: the updates arrive here.
     if (request.method === "POST" && url.pathname === "/webhook") {
-      void handleWebhook(request, response);
+      await handleWebhook(request, response);
       return;
     }
 
     if (url.pathname === "/health") {
       // The answer is the state of the dependencies, not the fact that the
       // process is alive: the container is restarted on a failed health check.
-      void healthReport({
+      const report = await healthReport({
         db,
         vault,
         logger: logger.child("health"),
         queueSize: () => queue.size,
         lastMessageAt: () => lastMessageAt,
         startedAt,
-      }).then((report) => {
-        response.writeHead(report.ok ? 200 : 503, { "content-type": "application/json" });
-        response.end(JSON.stringify(report));
       });
+      sendJson(response, report.ok ? 200 : 503, report);
       return;
     }
-    void miniApp(request, response).then((handled) => {
-      if (handled) return;
-      response.writeHead(404, { "content-type": "application/json" });
-      response.end(JSON.stringify({ ok: false }));
-    });
-  });
+
+    const handled = await miniApp(request, response);
+    if (handled) return;
+    sendJson(response, 404, { ok: false });
+  }
 
   /** Takes the update of Telegram and gives it to the bot. */
   async function handleWebhook(request: IncomingMessage, response: ServerResponse): Promise<void> {
@@ -382,7 +405,7 @@ async function main(): Promise<void> {
     const given = Array.isArray(secret) ? secret[0] : secret;
     if (!expected || given !== expected) {
       logger.warn("a webhook call came without the right secret");
-      response.writeHead(403).end("forbidden");
+      sendPlain(response, 403, "forbidden");
       return;
     }
 
@@ -395,18 +418,15 @@ async function main(): Promise<void> {
       const updateId = typeof update.update_id === "number" ? String(update.update_id) : "";
       if (updateId && !(await claimUpdate(updateId))) {
         logger.info("an update that was already handled came again", { updateId });
-        response.writeHead(200, { "content-type": "application/json" });
-        response.end(JSON.stringify({ ok: true, duplicate: true }));
+        sendJson(response, 200, { ok: true, duplicate: true });
         return;
       }
 
       await bot.handleUpdate(update);
-      response.writeHead(200, { "content-type": "application/json" });
-      response.end(JSON.stringify({ ok: true }));
+      sendJson(response, 200, { ok: true });
     } catch (error) {
       logger.error("the webhook call failed", { error: String(error) });
-      response.writeHead(400, { "content-type": "application/json" });
-      response.end(JSON.stringify({ ok: false }));
+      sendJson(response, 400, { ok: false });
     }
   }
 
@@ -555,6 +575,31 @@ main().catch((error) => {
 
 /** The biggest update Telegram may send. A text message is far below it. */
 const MAX_WEBHOOK_BYTES = 1024 * 1024;
+
+/**
+ * Writes a JSON answer once.
+ *
+ * A handler that answers and then fails in a later step must not write a
+ * second time: the headers are already on the wire and the second write throws
+ * inside the error path of the first. The socket may also be gone, because the
+ * client hung up while the answer was being prepared.
+ */
+function sendJson(response: ServerResponse, status: number, payload: unknown): void {
+  if (response.headersSent || response.writableEnded || response.destroyed) return;
+  const body = JSON.stringify(payload);
+  response.writeHead(status, {
+    "content-type": "application/json; charset=utf-8",
+    "cache-control": "no-store",
+  });
+  response.end(body);
+}
+
+/** Writes a plain answer once. */
+function sendPlain(response: ServerResponse, status: number, text: string): void {
+  if (response.headersSent || response.writableEnded || response.destroyed) return;
+  response.writeHead(status, { "content-type": "text/plain; charset=utf-8" });
+  response.end(text);
+}
 
 /**
  * Reads the body of a request.

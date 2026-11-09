@@ -1,5 +1,5 @@
 import { randomBytes } from "node:crypto";
-import { readFile, stat, writeFile } from "node:fs/promises";
+import { readFile, realpath, stat, writeFile } from "node:fs/promises";
 import type { IncomingMessage, ServerResponse } from "node:http";
 import path from "node:path";
 import type { Language } from "../i18n/index.js";
@@ -24,9 +24,18 @@ export interface MiniAppOptions {
   logger: Logger;
   /** The folder with the built frontend. */
   webRoot: string;
+  /**
+   * The Telegram user ids that may read the vault.
+   *
+   * The signature of the init data proves where the data came from, not that
+   * the person behind it is the owner: anybody who opens the Mini App gets a
+   * valid signature for their own account. Without this list every such user
+   * would read the notes, so a missing list allows nobody.
+   */
+  allowedUserIds: ReadonlySet<number>;
   /** The summaries of the days, they are shown at the top of the list. */
   summaries?: () => Promise<SummaryEntry[]>;
-  /** The file for the data that was not accepted, for the diagnostics. */
+  /** The file for the diagnostics of the data that was not accepted. */
   debugFile?: string;
   /** The name of the bot, for the button that opens the chat with it. */
   botUsername?: () => string;
@@ -36,6 +45,23 @@ export interface MiniAppOptions {
   defaultLanguage?: Language;
   /** The id of the owner, for the requests from the browser. */
   ownerId?: number;
+}
+
+/**
+ * Who is behind a request, and on what grounds.
+ *
+ * Every private route works from this value only: the identity, the reason it
+ * is trusted and the moment the trust ends. A route never re-reads the headers
+ * to find out who the caller is, so there is one place where the access is
+ * decided.
+ */
+export interface AuthContext {
+  /** The Telegram id of the person behind the request. */
+  userId: number;
+  /** How the caller proved the identity. */
+  basis: "telegram" | "session" | "browser-token";
+  /** When the access ends, in epoch milliseconds. */
+  expiresAt: number;
 }
 
 const CONTENT_TYPES: Record<string, string> = {
@@ -83,6 +109,35 @@ const SECURITY_HEADERS: Record<string, string> = {
   "Permissions-Policy": "geolocation=(), microphone=(), camera=()",
 };
 
+/** How long a session of the Mini App lives. */
+const SESSION_LIFETIME_MS = 86_400_000;
+/** The most sessions that are kept at once. */
+const MAX_SESSIONS = 50;
+/** The most sessions one user may hold, so one client cannot push out the rest. */
+const MAX_SESSIONS_PER_USER = 5;
+
+/**
+ * How many requests an endpoint takes per window.
+ *
+ * A search reads the whole vault, so it is the expensive one and it is limited
+ * the hardest. A picture is asked for by the browser itself and a note with a
+ * hundred pictures makes a hundred requests, so that limit is generous.
+ */
+const RATE_LIMITS: Record<string, { limit: number; windowMs: number }> = {
+  "/api/search": { limit: 30, windowMs: 60_000 },
+  "/api/notes": { limit: 120, windowMs: 60_000 },
+  "/api/note": { limit: 120, windowMs: 60_000 },
+  "/api/file": { limit: 600, windowMs: 60_000 },
+  "/api/summaries": { limit: 120, windowMs: 60_000 },
+  "/api/config": { limit: 120, windowMs: 60_000 },
+};
+
+interface Session {
+  userId: number;
+  basis: "telegram" | "browser-token";
+  expiresAt: number;
+}
+
 /**
  * The Mini App of the notes.
  *
@@ -92,18 +147,22 @@ const SECURITY_HEADERS: Record<string, string> = {
  */
 export function createMiniApp(options: MiniAppOptions) {
   const { vault, botToken, browserToken, logger, webRoot } = options;
+  const allowedUserIds = options.allowedUserIds;
 
   /**
    * The sessions of the Mini App.
    *
    * The data of Telegram comes in a header, but a picture in a note is asked
    * for by the browser itself, and a picture cannot carry a header. So the
-   * first request with the signed data opens a session, and the session
-   * lives in a cookie.
+   * first request with the signed data opens a session, and the session lives
+   * in a cookie. The session carries the identity, so a request that comes
+   * with the cookie alone is answered for the same user.
    */
-  const sessions = new Map<string, number>();
+  const sessions = new Map<string, Session>();
   const sessionCookie = "vault_session";
-  const sessionLifetime = 86_400_000;
+
+  /** The moments of the recent requests of every endpoint and user. */
+  const rateWindows = new Map<string, number[]>();
 
   return async function handle(
     request: IncomingMessage,
@@ -124,16 +183,28 @@ export function createMiniApp(options: MiniAppOptions) {
         return true;
       }
 
-      const auth = await authorize(request, url);
+      const auth = await authorize(request);
       if (!auth.ok) {
-        logger.warn("a request to the mini app was not allowed", { path: pathname });
+        logger.warn("a request to the mini app was not allowed", {
+          path: pathname,
+          reason: auth.reason,
+        });
         sendJson(response, 401, { ok: false, error: "not allowed" });
         return true;
       }
-      if (auth.session) {
-        response.setHeader("Set-Cookie", sessionCookieHeader(auth.session, isSecure(request)));
+      if (auth.setCookie) {
+        response.setHeader("Set-Cookie", auth.setCookie);
       }
-      await handleApi(request, response, url, pathname);
+      if (!withinRateLimit(auth.auth, pathname)) {
+        logger.warn("a request to the mini app was over its rate", {
+          path: pathname,
+          userId: auth.auth.userId,
+        });
+        response.setHeader("Retry-After", "60");
+        sendJson(response, 429, { ok: false, error: "too many requests" });
+        return true;
+      }
+      await handleApi(request, response, url, pathname, auth.auth);
       return true;
     }
 
@@ -149,7 +220,8 @@ export function createMiniApp(options: MiniAppOptions) {
    *
    * The token is in the address of the page, so it is given to the server
    * once and taken out of the address: from then on the cookie carries the
-   * access.
+   * access. The session remembers the owner, so the settings of the owner are
+   * the same as in the chat.
    */
   async function handleSession(request: IncomingMessage, response: ServerResponse): Promise<void> {
     try {
@@ -159,15 +231,38 @@ export function createMiniApp(options: MiniAppOptions) {
         sendJson(response, 401, { ok: false, error: "not allowed" });
         return;
       }
-      const session = randomBytes(24).toString("hex");
-      sessions.set(session, Date.now() + sessionLifetime);
-      pruneSessions();
-      response.setHeader("Set-Cookie", sessionCookieHeader(session, isSecure(request)));
+      const userId = options.ownerId;
+      if (userId === undefined || !allowedUserIds.has(userId)) {
+        logger.warn("the browser token has no owner in the allowlist");
+        sendJson(response, 401, { ok: false, error: "not allowed" });
+        return;
+      }
+
+      // The session of the cookie is reused when it is still good: the page
+      // asks for the exchange on every load, and a new session on every load
+      // would push the sessions of the other devices out.
+      const existing = readSessionToken(request);
+      const session = existing ? sessions.get(existing) : undefined;
+      if (existing && session && session.userId === userId && session.expiresAt > Date.now()) {
+        sendJson(response, 200, { ok: true });
+        return;
+      }
+
+      const opened = openSession(userId, "browser-token");
+      response.setHeader("Set-Cookie", sessionCookieHeader(opened, isSecure(request)));
       sendJson(response, 200, { ok: true });
     } catch (error) {
       logger.error("the session could not be opened", { error: String(error) });
       sendJson(response, 400, { ok: false, error: "bad request" });
     }
+  }
+
+  /** Opens a session for a user and keeps it. */
+  function openSession(userId: number, basis: Session["basis"]): string {
+    const token = randomBytes(24).toString("hex");
+    sessions.set(token, { userId, basis, expiresAt: Date.now() + SESSION_LIFETIME_MS });
+    pruneSessions(userId);
+    return token;
   }
 
   /** The cookie of the session, with the flags of a session cookie. */
@@ -191,14 +286,27 @@ export function createMiniApp(options: MiniAppOptions) {
     return value === "https" || Boolean(socket?.encrypted);
   }
 
+  /** The session token of the cookie of the request. */
+  function readSessionToken(request: IncomingMessage): string | null {
+    const cookies = request.headers.cookie ?? "";
+    for (const part of cookies.split(";")) {
+      const [name, value] = part.trim().split("=");
+      if (name === sessionCookie && value) return value;
+    }
+    return null;
+  }
+
   /**
-   * Checks the request: the signed data of Telegram, the session of the
-   * Mini App or the token of the owner.
+   * Checks the request and says who is behind it.
+   *
+   * The order is the signed data of Telegram, then the session of the cookie,
+   * then the token of the owner. Every path ends in the same AuthContext, and
+   * the allowlist is checked on every one of them: a signature proves the data
+   * came from Telegram, not that the person may read the notes.
    */
   async function authorize(
     request: IncomingMessage,
-    url: URL,
-  ): Promise<{ ok: boolean; userId?: number; session?: string }> {
+  ): Promise<{ ok: true; auth: AuthContext; setCookie?: string } | { ok: false; reason: string }> {
     const initData = request.headers["x-telegram-init-data"];
     if (typeof initData === "string" && initData.length > 0) {
       const result = validateInitData(initData, botToken);
@@ -208,63 +316,147 @@ export function createMiniApp(options: MiniAppOptions) {
           length: initData.length,
           fields: [...new URLSearchParams(initData).keys()],
         });
-        void saveDebug(initData);
-        return { ok: false };
+        void saveDebug(result.error ?? "the init data was not accepted", initData);
+        return { ok: false, reason: "the init data was not accepted" };
       }
 
-      const session = randomBytes(24).toString("hex");
-      sessions.set(session, Date.now() + sessionLifetime);
-      pruneSessions();
-      return { ok: true, userId: result.user?.id, session };
+      const userId = result.user?.id;
+      if (typeof userId !== "number" || !Number.isInteger(userId)) {
+        logger.warn("the init data of telegram carries no user");
+        void saveDebug("the init data carries no user", initData);
+        return { ok: false, reason: "no user in the init data" };
+      }
+      if (!allowedUserIds.has(userId)) {
+        // The signature is good, the person is not the owner. This is the
+        // check that keeps a stranger out of the notes.
+        logger.warn("a user that is not allowed opened the mini app", { userId });
+        return { ok: false, reason: "the user is not allowed" };
+      }
+
+      // The page asks for the data on every load, so the session of the
+      // cookie is reused when it belongs to the same user. A new session on
+      // every request would fill the store and push the other devices out.
+      const existing = readSessionToken(request);
+      const session = existing ? sessions.get(existing) : undefined;
+      if (existing && session && session.userId === userId && session.expiresAt > Date.now()) {
+        return {
+          ok: true,
+          auth: { userId, basis: "session", expiresAt: session.expiresAt },
+        };
+      }
+
+      const opened = openSession(userId, "telegram");
+      return {
+        ok: true,
+        auth: { userId, basis: "telegram", expiresAt: Date.now() + SESSION_LIFETIME_MS },
+        setCookie: sessionCookieHeader(opened, isSecure(request)),
+      };
     }
 
     // The session of the Mini App, it is in the cookie.
-    const cookies = request.headers.cookie ?? "";
-    for (const part of cookies.split(";")) {
-      const [name, value] = part.trim().split("=");
-      if (name !== sessionCookie || !value) continue;
-      const expiry = sessions.get(value);
-      if (expiry && expiry > Date.now()) {
-        return { ok: true };
+    const token = readSessionToken(request);
+    if (token) {
+      const session = sessions.get(token);
+      if (session && session.expiresAt > Date.now()) {
+        // The allowlist is checked again: a session outlives the change of the
+        // list, and a user that was removed from it must lose the access.
+        if (!allowedUserIds.has(session.userId)) {
+          sessions.delete(token);
+          logger.warn("a session of a user that is no longer allowed was dropped", {
+            userId: session.userId,
+          });
+          return { ok: false, reason: "the user is not allowed" };
+        }
+        return {
+          ok: true,
+          auth: {
+            userId: session.userId,
+            basis: "session",
+            expiresAt: session.expiresAt,
+          },
+        };
       }
-      sessions.delete(value);
+      sessions.delete(token);
     }
 
     const header = request.headers["x-auth-token"];
-    const token = typeof header === "string" ? header : url.searchParams.get("token");
-    if (token && browserToken && token === browserToken) return { ok: true };
+    if (typeof header === "string" && header.length > 0) {
+      if (browserToken && header === browserToken) {
+        const userId = options.ownerId;
+        if (userId === undefined || !allowedUserIds.has(userId)) {
+          return { ok: false, reason: "the browser token has no owner" };
+        }
+        return {
+          ok: true,
+          auth: { userId, basis: "browser-token", expiresAt: Date.now() + SESSION_LIFETIME_MS },
+        };
+      }
+      return { ok: false, reason: "the token of the owner does not match" };
+    }
 
-    logger.warn("a request to the mini app came without the data of telegram", {
-      path: url.pathname,
-    });
-    return { ok: false };
+    // The token is not read from the address of the page: an address ends up
+    // in the history of the browser, in the log of the proxy and in the
+    // referrer of every request, so the token travels in a header only and is
+    // exchanged for a session on the first load.
+    logger.warn("a request to the mini app came without the data of telegram");
+    return { ok: false, reason: "no credentials" };
   }
 
   /** Throws away the sessions that are over and keeps the list short. */
-  function pruneSessions(): void {
+  function pruneSessions(userId?: number): void {
     const now = Date.now();
-    for (const [session, expiry] of sessions) {
-      if (expiry <= now) sessions.delete(session);
+    for (const [token, session] of sessions) {
+      if (session.expiresAt <= now) sessions.delete(token);
     }
-    while (sessions.size > 50) {
+
+    // One user may hold a few sessions, not all of them.
+    if (userId !== undefined) {
+      const own = [...sessions].filter(([, session]) => session.userId === userId);
+      for (const [token] of own.slice(0, Math.max(0, own.length - MAX_SESSIONS_PER_USER))) {
+        sessions.delete(token);
+      }
+    }
+
+    while (sessions.size > MAX_SESSIONS) {
       const oldest = sessions.keys().next();
       if (oldest.done) break;
       sessions.delete(oldest.value);
     }
   }
 
+  /**
+   * Says whether the request is under the limit of its endpoint.
+   *
+   * The window is per user and per endpoint, so a burst of pictures does not
+   * use up the search of the owner. The counters live in the process: one
+   * instance serves the app, so there is nothing to share them with.
+   */
+  function withinRateLimit(auth: AuthContext, pathname: string): boolean {
+    const rule = RATE_LIMITS[pathname];
+    if (!rule) return true;
+
+    const key = `${auth.userId}:${pathname}`;
+    const now = Date.now();
+    const recent = (rateWindows.get(key) ?? []).filter((at) => now - at < rule.windowMs);
+    if (recent.length >= rule.limit) {
+      rateWindows.set(key, recent);
+      return false;
+    }
+    recent.push(now);
+    rateWindows.set(key, recent);
+    return true;
+  }
+
   async function handleApi(
-    request: IncomingMessage,
+    _request: IncomingMessage,
     response: ServerResponse,
     url: URL,
     pathname: string,
+    auth: AuthContext,
   ): Promise<void> {
     try {
       if (pathname === "/api/config") {
-        const userId = await currentUserId(request, url);
-        const language = userId
-          ? ((await options.language?.(userId)) ?? options.defaultLanguage ?? "en")
-          : (options.defaultLanguage ?? "en");
+        const language = (await options.language?.(auth.userId)) ?? options.defaultLanguage ?? "en";
         sendJson(response, 200, {
           ok: true,
           botUsername: options.botUsername?.() ?? "",
@@ -381,44 +573,37 @@ export function createMiniApp(options: MiniAppOptions) {
   }
 
   /**
-   * The user behind the request: the signed data of Telegram carries the id,
-   * the browser of the owner is the owner itself.
+   * Keeps a note about the data of Telegram that was not accepted.
+   *
+   * The data itself is never written: it carries the identity of the person
+   * and the hash of the signature, and a diagnostic file is not a place for
+   * either of them. Only the reason and the names of the fields are kept.
    */
-  async function currentUserId(request: IncomingMessage, url: URL): Promise<number | undefined> {
-    const initData = request.headers["x-telegram-init-data"];
-    if (typeof initData === "string" && initData.length > 0) {
-      const result = validateInitData(initData, botToken);
-      return result.ok ? result.user?.id : undefined;
-    }
-
-    const header = request.headers["x-auth-token"];
-    const token = typeof header === "string" ? header : url.searchParams.get("token");
-    if (token && browserToken && token === browserToken) return options.ownerId;
-    return undefined;
-  }
-
-  /**
-   * Keeps the last rejected data of Telegram in a file, so the problem can be
-   * looked at. The file is only written when the path is set.
-   */
-  async function saveDebug(initData: string): Promise<void> {
+  async function saveDebug(reason: string, initData: string): Promise<void> {
     if (!options.debugFile) return;
     try {
-      await writeFile(options.debugFile, initData, { encoding: "utf8", mode: 0o600 });
+      const fields = [...new URLSearchParams(initData).keys()].join(",");
+      await writeFile(
+        options.debugFile,
+        `${new Date().toISOString()} ${reason} fields=${fields}\n`,
+        {
+          encoding: "utf8",
+          mode: 0o600,
+        },
+      );
     } catch (error) {
       logger.warn("could not write the debug file", { error: String(error) });
     }
   }
 
   async function serveStatic(response: ServerResponse, pathname: string): Promise<void> {
-    const root = path.resolve(webRoot);
+    const root = await realpath(path.resolve(webRoot)).catch(() => path.resolve(webRoot));
     const relative = pathname
       .replace(/^\/app\//, "")
       .replace(/^\//, "")
       .trim();
     const target = path.resolve(root, relative === "" ? "index.html" : relative);
-    const inside = path.relative(root, target);
-    if (inside.startsWith("..") || path.isAbsolute(inside)) {
+    if (!insideRoot(root, target)) {
       sendJson(response, 403, { ok: false, error: "forbidden" });
       return;
     }
@@ -442,11 +627,25 @@ export function createMiniApp(options: MiniAppOptions) {
       return;
     }
 
-    const body = await readFile(target);
-    const type = CONTENT_TYPES[path.extname(target).toLowerCase()] ?? "application/octet-stream";
+    // A link inside the build must not lead outside of it.
+    const real = await realpath(target).catch(() => null);
+    if (!real || !insideRoot(root, real)) {
+      sendJson(response, 403, { ok: false, error: "forbidden" });
+      return;
+    }
+
+    const body = await readFile(real);
+    const type = CONTENT_TYPES[path.extname(real).toLowerCase()] ?? "application/octet-stream";
     response.writeHead(200, { "content-type": type, "cache-control": "no-cache" });
     response.end(body);
   }
+}
+
+/** True when the path is the root itself or sits below it. */
+function insideRoot(root: string, target: string): boolean {
+  const relative = path.relative(root, target);
+  if (relative === "") return true;
+  return !relative.startsWith("..") && !path.isAbsolute(relative);
 }
 
 function sendJson(response: ServerResponse, status: number, payload: unknown): void {

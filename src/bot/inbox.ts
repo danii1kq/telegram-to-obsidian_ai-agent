@@ -1,6 +1,6 @@
 import { and, asc, eq, inArray, lt, or, sql } from "drizzle-orm";
 import type { Database } from "../db/index.js";
-import { jobs } from "../db/schema.js";
+import { jobs, meta } from "../db/schema.js";
 import type { Logger } from "../logger.js";
 
 /**
@@ -17,7 +17,7 @@ import type { Logger } from "../logger.js";
  * happened, and the pipeline reads it to decide what to report.
  */
 
-export type JobState = "queued" | "running" | "succeeded" | "failed";
+export type JobState = "queued" | "running" | "succeeded" | "failed" | "interrupted";
 
 export interface JobRecord {
   id: number;
@@ -41,6 +41,9 @@ const MAX_ATTEMPTS = 3;
 
 /** A job that has not sent a heartbeat for this long is stuck. */
 export const STUCK_JOB_MS = 15 * 60_000;
+
+/** The mark that the jobs of an older version were already dealt with. */
+const LEGACY_MARK = "jobs.legacy-migrated";
 
 export interface InboxOptions {
   db: Database["db"];
@@ -196,6 +199,43 @@ export class Inbox {
       });
     }
     return rows.map(toRecord);
+  }
+
+  /**
+   * Marks the jobs of an older version as interrupted, once.
+   *
+   * Before this version the webhook answered Telegram and then handled the
+   * update in the same call, so a row in `queued` or `running` is a leftover of
+   * a process that stopped in the middle: the message was already handled, or
+   * it was not, and there is no way to tell. Running them again would write a
+   * note twice and would repeat an `/undo`, so they are kept with their payload
+   * and marked as interrupted, where the owner can see them.
+   *
+   * The mark is written into `meta`, so the migration runs once. The jobs that
+   * this version queues are left alone on every later start.
+   */
+  async migrateLegacyJobs(): Promise<number> {
+    const marker = await this.db.select().from(meta).where(eq(meta.key, LEGACY_MARK)).limit(1);
+    if (marker.length > 0) return 0;
+
+    const at = new Date(this.now()).toISOString();
+    const rows = await this.db
+      .update(jobs)
+      .set({ state: "interrupted", finishedAt: at, heartbeatAt: at })
+      .where(inArray(jobs.state, ["queued", "running"]))
+      .returning({ id: jobs.id });
+
+    await this.db
+      .insert(meta)
+      .values({ key: LEGACY_MARK, value: at })
+      .onConflictDoNothing();
+
+    if (rows.length > 0) {
+      this.logger.warn("the jobs of an older version are marked as interrupted", {
+        count: rows.length,
+      });
+    }
+    return rows.length;
   }
 
   /**

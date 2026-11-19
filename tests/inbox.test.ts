@@ -130,4 +130,52 @@ describe("A07: the durable inbox", () => {
     expect(await inbox.prune(-1)).toBe(1);
     client.close();
   });
+
+  it("marks the jobs of an older version as interrupted, once", async () => {
+    const { file, client, inbox } = await makeInbox();
+    await inbox.accept({ updateId: "1001", payload: "an old thought" });
+    const { job } = await inbox.accept({ updateId: "1002", payload: "another old thought" });
+    await inbox.start(job?.id ?? 0);
+    client.close();
+
+    // The first start after the update: the rows of the older version are not
+    // run again, because the message may already be handled.
+    const reopened = await createDatabase(file);
+    const afterRestart = new Inbox({ db: reopened.db, logger });
+    const marked = await afterRestart.migrateLegacyJobs();
+
+    expect(marked).toBe(2);
+    expect(await afterRestart.pending()).toHaveLength(0);
+
+    // The second start does nothing: the mark is written.
+    expect(await afterRestart.migrateLegacyJobs()).toBe(0);
+    reopened.client.close();
+  });
+
+  it("continues the jobs that this version queued after a restart", async () => {
+    const { file, client, inbox } = await makeInbox();
+    await inbox.migrateLegacyJobs();
+    await inbox.accept({ updateId: "2001", payload: "a new thought" });
+    client.close();
+
+    // A restart of the same version: the queued job is picked up again.
+    const reopened = await createDatabase(file);
+    const afterRestart = new Inbox({ db: reopened.db, logger });
+    await afterRestart.migrateLegacyJobs();
+    const pending = await afterRestart.pending();
+
+    expect(pending.map((row) => row.updateId)).toEqual(["2001"]);
+    reopened.client.close();
+  });
+
+  it("keeps the payload of an interrupted job", async () => {
+    const { client, inbox } = await makeInbox();
+    await inbox.accept({ updateId: "3001", payload: "the text of the owner" });
+    await inbox.migrateLegacyJobs();
+
+    const rows = await client.execute("SELECT payload, state FROM jobs WHERE update_id = '3001'");
+    expect(rows.rows[0]?.payload).toBe("the text of the owner");
+    expect(rows.rows[0]?.state).toBe("interrupted");
+    client.close();
+  });
 });

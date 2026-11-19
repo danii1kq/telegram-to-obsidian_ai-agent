@@ -72,7 +72,7 @@ export const jobs = sqliteTable("jobs", {
   id: integer("id").primaryKey({ autoIncrement: true }),
   updateId: text("update_id").notNull().unique(),
   payload: text("payload").notNull(),
-  /** queued, running, succeeded or failed. */
+  /** queued, running, succeeded, failed or interrupted. */
   state: text("state").notNull().default("queued"),
   attempts: integer("attempts").notNull().default(0),
   createdAt: text("created_at").notNull(),
@@ -82,6 +82,17 @@ export const jobs = sqliteTable("jobs", {
   /** The last sign of life of the run, so a stuck job is visible. */
   heartbeatAt: text("heartbeat_at"),
   telegramUserId: text("telegram_user_id"),
+});
+
+/**
+ * The small facts about the bot itself, one row per fact.
+ *
+ * The table exists for the marks that have to survive a restart, such as the
+ * one-time migration of the jobs that were queued by an older version.
+ */
+export const meta = sqliteTable("meta", {
+  key: text("key").primaryKey(),
+  value: text("value").notNull(),
 });
 
 /**
@@ -101,4 +112,5 @@ export const schema = {
   dailySummaries,
   userSettings,
   jobs,
+  meta,
 };

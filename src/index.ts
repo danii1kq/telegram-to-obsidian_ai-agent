@@ -3,6 +3,7 @@ import { createServer, type IncomingMessage, type ServerResponse } from "node:ht
 import path from "node:path";
 import { desc } from "drizzle-orm";
 import { type Bot, InlineKeyboard } from "grammy";
+import type { Update } from "grammy/types";
 import { buildStatus, hashOf, listInbox, searchNotes, undoLast } from "./bot/actions.js";
 import { AttachmentTooBigError, downloadAttachment } from "./bot/attachments.js";
 import { createBot } from "./bot/bot.js";
@@ -199,86 +200,85 @@ async function main(): Promise<void> {
     logger: logger.child("telegram"),
     getLanguage,
     setLanguage,
+    // The handlers do the work and nothing else. The queue is not touched
+    // here: a job is taken from the database by the runner below, and the
+    // handler is already running inside it. Pushing to the queue from here was
+    // the second path, and it is what made a job run twice.
     onText: async (text, userId, chatId, language) => {
-      queue.push(async () => {
-        if (config.botAck) {
-          await bot.api.sendMessage(chatId, config.botAck).catch(() => undefined);
-        }
-        try {
-          const result = await processMessage(
-            text,
-            userId,
-            { config, hermes, vault, logger: logger.child("pipeline") },
-            { language },
-          );
-          // The log first, the answer second: a failed notification must not
-          // leave a written note with no record of it.
-          await record(result, userId);
-          lastMessageAt = Date.now();
-          await bot.api
-            .sendMessage(chatId, statusWithConflicts(result, language))
-            .catch((error) => logger.warn("the status was not sent", { error: String(error) }));
-        } catch (error) {
-          logger.error("could not process the message", { error: String(error) });
-          await bot.api.sendMessage(chatId, messages(language).errorWrite).catch(() => undefined);
-        }
-      });
+      if (config.botAck) {
+        await bot.api.sendMessage(chatId, config.botAck).catch(() => undefined);
+      }
+      try {
+        const result = await processMessage(
+          text,
+          userId,
+          { config, hermes, vault, logger: logger.child("pipeline") },
+          { language },
+        );
+        // The log first, the answer second: a failed notification must not
+        // leave a written note with no record of it.
+        await record(result, userId);
+        lastMessageAt = Date.now();
+        await bot.api
+          .sendMessage(chatId, statusWithConflicts(result, language))
+          .catch((error) => logger.warn("the status was not sent", { error: String(error) }));
+      } catch (error) {
+        logger.error("could not process the message", { error: String(error) });
+        await bot.api.sendMessage(chatId, messages(language).errorWrite).catch(() => undefined);
+      }
     },
     onAttachment: async ({ caption, file, userId, chatId, language, audio }) => {
-      queue.push(async () => {
-        try {
-          // The download happens here, inside the queue, so a burst of files
-          // does not put several of them in memory at once.
-          const data = await downloadAttachment(bot, config.telegram.botToken, file.fileId);
-          const saved = await saveAttachment(
-            config.vault.path,
-            file.name,
-            data,
-            vault.currentDate(),
-          );
-          logger.info("saved a file of the owner", {
-            name: saved.name,
-            bytes: saved.bytes,
+      try {
+        // The download happens inside the job, so a burst of files does not put
+        // several of them in memory at once.
+        const data = await downloadAttachment(bot, config.telegram.botToken, file.fileId);
+        const saved = await saveAttachment(
+          config.vault.path,
+          file.name,
+          data,
+          vault.currentDate(),
+        );
+        logger.info("saved a file of the owner", {
+          name: saved.name,
+          bytes: saved.bytes,
+        });
+
+        // A voice message is a thought said out loud, so it is turned into
+        // text and goes through the same pipeline as a typed message. When
+        // the transcription is off or fails, the file is still saved and the
+        // note points at it, so nothing is lost.
+        const spoken = audio ? await transcribe(data, file.name) : "";
+        const text = spoken || caption.trim() || messages(language).attachmentFallback(saved.name);
+
+        const result = await processMessage(
+          text,
+          userId,
+          { config, hermes, vault, logger: logger.child("pipeline") },
+          { attachment: saved, language },
+        );
+        // The log first, the answer second, the same as for a text message.
+        await record(result, userId);
+        lastMessageAt = Date.now();
+        await bot.api
+          .sendMessage(chatId, statusWithConflicts(result, language))
+          .catch((error) => logger.warn("the status was not sent", { error: String(error) }));
+      } catch (error) {
+        // The limit is the only failure the owner can do something about, so
+        // it is the only one that gets the message about the size.
+        if (error instanceof AttachmentTooBigError) {
+          logger.warn("a file of the owner is over the limit", {
+            fileName: file.name,
+            bytes: error.bytes,
+            limit: error.limit,
           });
-
-          // A voice message is a thought said out loud, so it is turned into
-          // text and goes through the same pipeline as a typed message. When
-          // the transcription is off or fails, the file is still saved and the
-          // note points at it, so nothing is lost.
-          const spoken = audio ? await transcribe(data, file.name) : "";
-          const text =
-            spoken || caption.trim() || messages(language).attachmentFallback(saved.name);
-
-          const result = await processMessage(
-            text,
-            userId,
-            { config, hermes, vault, logger: logger.child("pipeline") },
-            { attachment: saved, language },
-          );
-          // The log first, the answer second, the same as for a text message.
-          await record(result, userId);
-          lastMessageAt = Date.now();
           await bot.api
-            .sendMessage(chatId, statusWithConflicts(result, language))
-            .catch((error) => logger.warn("the status was not sent", { error: String(error) }));
-        } catch (error) {
-          // The limit is the only failure the owner can do something about, so
-          // it is the only one that gets the message about the size.
-          if (error instanceof AttachmentTooBigError) {
-            logger.warn("a file of the owner is over the limit", {
-              fileName: file.name,
-              bytes: error.bytes,
-              limit: error.limit,
-            });
-            await bot.api
-              .sendMessage(chatId, messages(language).fileTooBig("20 MB"))
-              .catch(() => undefined);
-            return;
-          }
-          logger.error("could not save the file", { error: String(error), fileName: file.name });
-          await bot.api.sendMessage(chatId, messages(language).errorSave).catch(() => undefined);
+            .sendMessage(chatId, messages(language).fileTooBig("20 MB"))
+            .catch(() => undefined);
+          return;
         }
-      });
+        logger.error("could not save the file", { error: String(error), fileName: file.name });
+        await bot.api.sendMessage(chatId, messages(language).errorSave).catch(() => undefined);
+      }
     },
     onStatus: async (_userId, language) =>
       buildStatus(
@@ -458,6 +458,11 @@ async function main(): Promise<void> {
     // An answer of 200 is a promise that the message will not be lost, and a
     // promise that only an in-memory queue backs up is not one: a restart
     // between the answer and the write loses the message for good.
+    //
+    // The update is not handled here. The answer means "accepted", and the
+    // runner below takes the row and does the work. Handling it in this call
+    // was the second path: the same update ran once here and once from the
+    // queue, and a slow job held the answer of Telegram for its whole length.
     if (updateId) {
       try {
         const accepted = await inbox.accept({
@@ -470,6 +475,11 @@ async function main(): Promise<void> {
           sendJson(response, 200, { ok: true, duplicate: true });
           return;
         }
+        sendJson(response, 200, { ok: true });
+        // The row is on disk, so the work can start. The answer above does not
+        // wait for it: a job of a minute must not hold the answer of Telegram.
+        wake();
+        return;
       } catch (error) {
         // Without the row there is no promise to keep, so the answer is a
         // failure and Telegram sends the update again.
@@ -479,6 +489,7 @@ async function main(): Promise<void> {
       }
     }
 
+    // An update without an id cannot be deduplicated, so it is handled at once.
     try {
       await bot.handleUpdate(update);
       sendJson(response, 200, { ok: true });
@@ -551,7 +562,7 @@ async function main(): Promise<void> {
    * allowlist, the same pipeline. The job is marked as running first, so a
    * second start does not pick it up again, and its outcome is written back.
    */
-  async function runRecoveredJob(job: { id: number; payload: string }): Promise<void> {
+  async function runJob(job: { id: number; payload: string }): Promise<void> {
     const started = await inbox.start(job.id);
     if (!started) return;
 
@@ -561,7 +572,7 @@ async function main(): Promise<void> {
       await inbox.succeed(job.id);
     } catch (error) {
       const result = await inbox.fail(job.id, String(error));
-      logger.error("a recovered job failed", {
+      logger.error("a job failed", {
         jobId: job.id,
         retry: result.retry,
         error: String(error),
@@ -569,17 +580,48 @@ async function main(): Promise<void> {
     }
   }
 
-  // The jobs that were running when the process stopped are put back into the
-  // queue before anything else runs: the process that ran them is gone, and
-  // nothing else will ever finish them. The pipeline reads the vault to decide
-  // what actually happened, so a job whose write landed is reported as done
-  // instead of being written twice.
-  void inbox
-    .recover()
-    .then((recovered) => {
-      for (const job of recovered) {
-        void queue.push(() => runRecoveredJob(job));
+  /**
+   * Takes the queued jobs and runs them, one after another.
+   *
+   * This is the only place where a job of the owner is run. The webhook and the
+   * polling loop both end in `inbox.accept`, and the row is what this loop
+   * reads: one path, one order, one place to look when a message did not
+   * arrive. A job that fails and still has attempts left goes back to the
+   * queue, and the loop picks it up again on its next turn.
+   */
+  let draining = false;
+  async function drainJobs(): Promise<void> {
+    if (draining) return;
+    draining = true;
+    try {
+      for (;;) {
+        if (stopping) return;
+        const pending = await inbox.pending(1);
+        const job = pending[0];
+        if (!job) return;
+        await runJob(job);
       }
+    } catch (error) {
+      logger.error("could not run the queued jobs", { error: String(error) });
+    } finally {
+      draining = false;
+    }
+  }
+
+  /** Wakes the runner when a new job appears. */
+  function wake(): void {
+    void drainJobs();
+  }
+
+  // The jobs of an older version are marked as interrupted before anything
+  // else runs: they were queued by a version that handled the update in the
+  // same call as the answer to Telegram, so running them again would write a
+  // note twice and would repeat an /undo. The mark is written once.
+  void inbox
+    .migrateLegacyJobs()
+    .then(() => inbox.recover())
+    .then((recovered) => {
+      if (recovered.length > 0) wake();
     })
     .catch((error) => {
       logger.error("could not recover the jobs of the previous run", { error: String(error) });
@@ -605,13 +647,25 @@ async function main(): Promise<void> {
     await bot.init();
     await bot.api.setWebhook(config.telegram.webhookUrl, {
       secret_token: config.telegram.webhookSecret || undefined,
-      allowed_updates: ["message"],
+      // The language buttons come as callback queries, and a webhook that does
+      // not list them never receives them: the owner presses a button and
+      // nothing happens.
+      allowed_updates: ["message", "callback_query"],
     });
     logger.info("the bot waits for the updates on the webhook", {
       url: config.telegram.webhookUrl,
     });
   } else {
-    await startPolling(bot, logger);
+    await startPolling(bot, logger, async (update) => {
+      const accepted = await inbox.accept({
+        updateId: String(update.update_id),
+        payload: JSON.stringify(update),
+        telegramUserId: readUserId(update),
+      });
+      if (!accepted.created) return false;
+      wake();
+      return true;
+    });
   }
 }
 
@@ -645,11 +699,34 @@ function summaryMarkup(
 /**
  * Polls Telegram for the updates.
  *
+ * The updates go through the same door as the webhook: an update is written to
+ * the database first, and only then is it handed to the bot. The offset of the
+ * polling is moved by grammY after the handler returns, so the write happens
+ * before the move: a process that dies in between asks Telegram for the same
+ * update again.
+ *
+ * The bot does not handle the update here. The update is accepted as a row and
+ * the runner does the work, so both modes have one place where a message is
+ * processed.
+ *
  * Telegram answers with a conflict when another instance of the same bot is
  * still asking for the updates, for example right after the restart of the
  * container. The bot waits and asks again instead of falling down.
  */
-async function startPolling(bot: Bot, logger: Logger): Promise<void> {
+async function startPolling(
+  bot: Bot,
+  logger: Logger,
+  accept: (update: Update) => Promise<boolean>,
+): Promise<void> {
+  // The middleware is the first one in the chain, so it runs before any
+  // handler of the bot and before the offset of the polling moves.
+  bot.use(async (ctx, next) => {
+    const accepted = await accept(ctx.update);
+    // A duplicate is not handled again, and the offset still has to move.
+    if (!accepted) return;
+    await next();
+  });
+
   for (;;) {
     try {
       await bot.start({
@@ -657,6 +734,9 @@ async function startPolling(bot: Bot, logger: Logger): Promise<void> {
         // The updates that arrived while the bot was down are handled, not
         // dropped: a message of the owner is not a stale event.
         drop_pending_updates: false,
+        // The language buttons come as callback queries, and a bot that does
+        // not ask for them never receives them.
+        allowed_updates: ["message", "callback_query"],
       });
       return;
     } catch (error) {

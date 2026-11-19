@@ -5,6 +5,7 @@ import { describe, expect, it } from "vitest";
 import {
   buildSummaryPrompt,
   cleanSummary,
+  collectNotesOfDay,
   revertStrayWrites,
   runDailySummary,
   summaryNotice,
@@ -239,6 +240,59 @@ describe("runDailySummary", () => {
     expect(summary).toBeNull();
 
     await expect(readFile(path.join(vaultPath, "october_2026.md"), "utf8")).rejects.toThrow();
+    client.close();
+  });
+
+  it("summarises the write of the day, not the whole long note", async () => {
+    const { vault, db, client } = await makeWorld();
+    const day = "2026-10-21";
+    const at = new Date(localDayStartMs(day, "Asia/Almaty") + 3600_000).toISOString();
+
+    // The note is long and was written a month ago. The row of the day holds
+    // only the block of that day, and that is what the summary has to read.
+    const old = "the text of a month ago ".repeat(200);
+    await vault.writeNote("Project.md", old);
+    await db.insert(notesLog).values({
+      createdAt: at,
+      action: "append",
+      path: "Project.md",
+      title: "Project",
+      source: "agent",
+      bytes: 40,
+      excerpt: "## 2026-10-21\n\nthe line of that day",
+      telegramUserId: "1",
+    });
+
+    const notes = await collectNotesOfDay({ config, db, vault, hermes, logger }, day);
+    expect(notes).toHaveLength(1);
+    expect(notes[0]?.excerpt).toContain("the line of that day");
+    expect(notes[0]?.excerpt).not.toContain("a month ago");
+    client.close();
+  });
+
+  it("groups the writes of one note and keeps the newest first", async () => {
+    const { vault, db, client } = await makeWorld();
+    const day = "2026-10-21";
+    const base = localDayStartMs(day, "Asia/Almaty");
+
+    await vault.writeNote("Project.md", "the note");
+    for (const [index, text] of ["first block", "second block", "third block"].entries()) {
+      await db.insert(notesLog).values({
+        createdAt: new Date(base + (index + 1) * 60_000).toISOString(),
+        action: "append",
+        path: "Project.md",
+        title: "Project",
+        source: "agent",
+        bytes: text.length,
+        excerpt: text,
+        telegramUserId: "1",
+      });
+    }
+
+    const notes = await collectNotesOfDay({ config, db, vault, hermes, logger }, day);
+    expect(notes).toHaveLength(1);
+    const excerpt = notes[0]?.excerpt ?? "";
+    expect(excerpt.indexOf("third block")).toBeLessThan(excerpt.indexOf("first block"));
     client.close();
   });
 });

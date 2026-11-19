@@ -34,6 +34,8 @@ interface DayNote {
 }
 
 const MAX_EXCERPT = 700;
+/** How many writes of one note the summary of a day keeps. */
+const MAX_EXCERPTS_PER_NOTE = 6;
 
 /**
  * The toolsets of the agent that writes the summary.
@@ -172,7 +174,19 @@ export async function catchUpDailySummaries(
   return summaries;
 }
 
-/** The notes the owner wrote during a day. */
+/**
+ * The notes the owner wrote during a day, grouped by the note.
+ *
+ * The log keeps one row per write, so a note that was extended three times has
+ * three rows. The summary is about the day, not about the rows: the writes are
+ * grouped by the file, and the text of each write is taken from the row. The
+ * newest blocks come first within the limit, because the last thing written in
+ * a long note is the thing the owner remembers.
+ *
+ * A row of an older version has no excerpt. For those the note is read, which
+ * is what the summary did before: the text of the file is better than nothing,
+ * even when it is the note as it looks now.
+ */
 export async function collectNotesOfDay(deps: DailyDeps, day: string): Promise<DayNote[]> {
   const timeZone = deps.config.vault.timeZone;
   const start = new Date(localDayStartMs(day, timeZone)).toISOString();
@@ -184,18 +198,29 @@ export async function collectNotesOfDay(deps: DailyDeps, day: string): Promise<D
     .where(and(gte(notesLog.createdAt, start), lt(notesLog.createdAt, end)))
     .orderBy(notesLog.id);
 
-  const notes: DayNote[] = [];
-  const seen = new Set<string>();
+  const grouped = new Map<string, { title: string; action: string; excerpts: string[] }>();
 
   for (const row of rows) {
-    if (seen.has(row.path)) continue;
-    seen.add(row.path);
-    const file = await deps.vault.readFile(row.path).catch(() => null);
+    const entry = grouped.get(row.path) ?? { title: row.title, action: row.action, excerpts: [] };
+    entry.action = row.action;
+    if (row.excerpt) {
+      entry.excerpts.push(row.excerpt);
+    } else {
+      const file = await deps.vault.readFile(row.path).catch(() => null);
+      if (file) entry.excerpts.push(file.content);
+    }
+    grouped.set(row.path, entry);
+  }
+
+  const notes: DayNote[] = [];
+  for (const [notePath, entry] of grouped) {
+    // The newest writes first, then the whole text is cut to the limit.
+    const newest = entry.excerpts.slice(-MAX_EXCERPTS_PER_NOTE).reverse();
     notes.push({
-      title: row.title,
-      path: row.path,
-      action: row.action,
-      excerpt: file ? excerptOf(file.content) : "",
+      title: entry.title,
+      path: notePath,
+      action: entry.action,
+      excerpt: excerptOf(newest.join("\n\n")),
     });
   }
 

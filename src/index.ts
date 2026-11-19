@@ -178,6 +178,9 @@ async function main(): Promise<void> {
       title: result.title,
       source: result.usedFallback ? "fallback" : "agent",
       bytes: result.bytes,
+      // The text of the write, so the summary of a day reads what was written
+      // that day and not the note as it looks a month later.
+      excerpt: result.mutations[result.mutations.length - 1]?.excerpt ?? null,
       telegramUserId: String(userId),
     });
 

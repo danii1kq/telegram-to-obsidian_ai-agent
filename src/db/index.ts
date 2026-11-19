@@ -29,9 +29,12 @@ export async function ensureSchema(client: Client): Promise<void> {
       title TEXT NOT NULL,
       source TEXT NOT NULL,
       bytes INTEGER NOT NULL,
+      excerpt TEXT,
       telegram_user_id TEXT
     )`,
   );
+  // A database that was created before the excerpt existed gets the column.
+  await client.execute("ALTER TABLE notes_log ADD COLUMN excerpt TEXT").catch(() => undefined);
   await client.execute(
     `CREATE TABLE IF NOT EXISTS processed_updates (
       update_id TEXT PRIMARY KEY,

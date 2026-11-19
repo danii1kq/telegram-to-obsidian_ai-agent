@@ -52,6 +52,14 @@ export interface Mutation {
   previous?: string;
   /** The text after the write, so the next undo can prove it is unchanged. */
   content: string;
+  /**
+   * The text of this write, as the daily summary reads it.
+   *
+   * For an append it is the block, for a create and an overwrite it is the
+   * text of the note. It is not the whole note for an append on purpose: the
+   * summary of a day is about what happened that day.
+   */
+  excerpt: string;
 }
 
 /**
@@ -155,13 +163,17 @@ async function collectMutations(vault: VaultOperations, events: VaultEvent[]): P
   const mutations: Mutation[] = [];
   for (const event of events) {
     const file = await vault.readFile(event.path).catch(() => null);
+    const content = file?.content ?? "";
     mutations.push({
       action: event.action,
       path: event.path,
       title: event.title,
       ...(event.block ? { block: event.block } : {}),
       ...(event.previous !== undefined ? { previous: event.previous } : {}),
-      content: file?.content ?? "",
+      content,
+      // The block for an append, the text of the note otherwise: the summary
+      // of a day reads what was written that day, not the whole note.
+      excerpt: event.block ?? content,
     });
   }
   return mutations;
@@ -205,6 +217,7 @@ async function fallbackWrite(
           title: result.title,
           block: normalizeDashes(block),
           content: await readNoteContent(deps.vault, result.relativePath),
+          excerpt: normalizeDashes(block),
         },
       ],
     };
@@ -214,6 +227,7 @@ async function fallbackWrite(
   if (tags.length > 0) {
     await applyTags(deps.vault, result.relativePath, tags);
   }
+  const created = await readNoteContent(deps.vault, result.relativePath);
   return {
     status: text_.noteCreated(result.title),
     action: "create",
@@ -228,7 +242,8 @@ async function fallbackWrite(
         action: "create",
         path: result.relativePath,
         title: result.title,
-        content: await readNoteContent(deps.vault, result.relativePath),
+        content: created,
+        excerpt: created,
       },
     ],
   };

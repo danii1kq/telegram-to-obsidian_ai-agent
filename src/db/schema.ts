@@ -1,6 +1,14 @@
 import { integer, sqliteTable, text } from "drizzle-orm/sqlite-core";
 
-/** Every note the bot created or extended, with the moment it happened. */
+/**
+ * Every note the bot created or extended, with the moment it happened.
+ *
+ * The excerpt is the text of the write itself: the block for an append, the
+ * text of the note for a create or an overwrite. The daily summary reads it,
+ * so a day is summarised from what was written that day and not from the note
+ * as it looks now: a note that grew for a month would otherwise hide the one
+ * line of Tuesday.
+ */
 export const notesLog = sqliteTable("notes_log", {
   id: integer("id").primaryKey({ autoIncrement: true }),
   createdAt: text("created_at").notNull(),
@@ -9,6 +17,8 @@ export const notesLog = sqliteTable("notes_log", {
   title: text("title").notNull(),
   source: text("source").notNull(),
   bytes: integer("bytes").notNull(),
+  /** The text of this write, shortened. Null for the rows of older versions. */
+  excerpt: text("excerpt"),
   telegramUserId: text("telegram_user_id"),
 });
 

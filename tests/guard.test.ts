@@ -80,4 +80,43 @@ describe("VaultGuard", () => {
 
     expect(result.conflictFiles).toHaveLength(1);
   });
+
+  it("creates a second note when the name is taken", async () => {
+    const vault = await makeVault();
+    const guard = new VaultGuard({ vaultRoot: vault, settleDelayMs: 1, verifyDelayMs: 1 });
+
+    const first = await guard.create("Note.md", "first thought");
+    const second = await guard.create("Note.md", "second thought");
+
+    expect(first.relativePath).toBe("Note.md");
+    expect(second.relativePath).toBe("Note-2.md");
+    expect(await readFile(path.join(vault, "Note.md"), "utf8")).toBe("first thought\n");
+    expect(await readFile(path.join(vault, "Note-2.md"), "utf8")).toBe("second thought\n");
+  });
+
+  it("keeps counting the suffix until a free name is found", async () => {
+    const vault = await makeVault();
+    const guard = new VaultGuard({ vaultRoot: vault, settleDelayMs: 1, verifyDelayMs: 1 });
+
+    await guard.create("Note.md", "one");
+    await guard.create("Note.md", "two");
+    const third = await guard.create("Note.md", "three");
+
+    expect(third.relativePath).toBe("Note-3.md");
+  });
+
+  it("does not replace a note that appeared between the check and the write", async () => {
+    const vault = await makeVault();
+    const guard = new VaultGuard({ vaultRoot: vault, settleDelayMs: 1, verifyDelayMs: 1 });
+
+    // The name is free when the write starts, and another program takes it
+    // right after that. The publication must fail instead of replacing it.
+    const target = path.join(vault, "Race.md");
+    const result = await guard.create("Race.md", "mine");
+    await writeFile(target, "the other program was here\n", "utf8");
+
+    expect(result.relativePath).toBe("Race.md");
+    const after = await readFile(target, "utf8");
+    expect(after).toBe("the other program was here\n");
+  });
 });

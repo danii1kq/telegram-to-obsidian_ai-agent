@@ -1,6 +1,6 @@
 import { randomBytes } from "node:crypto";
 import { constants } from "node:fs";
-import { access, mkdir, readdir, readFile, rename, rm, stat, writeFile } from "node:fs/promises";
+import { access, link, mkdir, readdir, readFile, rename, rm, stat, writeFile } from "node:fs/promises";
 import path from "node:path";
 import { resolveRealInsideVault, toRelative } from "./paths.js";
 import type { VaultWatcher } from "./watcher.js";
@@ -135,6 +135,119 @@ export class VaultGuard {
     const payload = content.endsWith("\n") ? content : `${content}\n`;
 
     return this.runWithRetry(absolute, payload, existed ? "overwrite" : "create");
+  }
+
+  /**
+   * Creates a note and never replaces one that is already there.
+   *
+   * The difference from `write` is the whole point of this method: a note that
+   * appears between the check and the write is not overwritten. `write` decides
+   * between create and overwrite by looking at the file first, and the rename
+   * that follows replaces whatever is at the target by then, so a note written
+   * by another program in that window is lost without a trace.
+   *
+   * The file is published with `link`, which fails when the target exists. That
+   * makes the check and the publication one step. When the name is taken, the
+   * next free suffix is tried: `Note.md`, `Note-2.md`, `Note-3.md`. The result
+   * carries the path that was actually written, so the log and the undo work
+   * with the real file and not with the name that was asked for.
+   */
+  async create(targetPath: string, content: string): Promise<WriteResult> {
+    const absolute = await resolveRealInsideVault(this.vaultRoot, targetPath);
+    await mkdir(path.dirname(absolute), { recursive: true });
+    const payload = content.endsWith("\n") ? content : `${content}\n`;
+    const notes: string[] = [];
+    let lastError: unknown;
+
+    for (let attempt = 1; attempt <= this.maxAttempts; attempt += 1) {
+      try {
+        await this.settle(absolute);
+
+        const target = await this.firstFreeName(absolute);
+        if (target !== absolute) {
+          notes.push(`the name was taken, the note went to ${path.basename(target)}`);
+        }
+
+        await this.publishNew(target, payload);
+
+        const verification = await this.verify(target, payload);
+        if (verification.ok) {
+          const conflictFiles = await this.findConflictFiles(target);
+          return {
+            action: "create",
+            path: target,
+            relativePath: toRelative(this.vaultRoot, target),
+            title: path.basename(target).replace(/\.md$/i, ""),
+            bytes: Buffer.byteLength(payload, "utf8"),
+            verified: true,
+            attempts: attempt,
+            conflictFiles,
+            notes: [...notes, ...verification.notes],
+          };
+        }
+
+        notes.push(verification.note);
+        lastError = new Error(verification.note);
+        await this.sleep(this.retryDelayMs);
+      } catch (error) {
+        if (!isTransient(error)) throw error;
+        lastError = error;
+        notes.push(`attempt ${attempt}: ${errorCode(error) ?? "unknown error"}`);
+        await this.sleep(this.retryDelayMs);
+      }
+    }
+
+    throw new VaultWriteError(
+      `Could not create ${toRelative(this.vaultRoot, absolute)} after ${this.maxAttempts} attempts: ${
+        (lastError as Error | undefined)?.message ?? "unknown error"
+      }`,
+      this.maxAttempts,
+    );
+  }
+
+  /**
+   * The first name that is free, starting from the one that was asked for.
+   *
+   * The answer is only a hint: another program may take the name before the
+   * publication, which is why `publishNew` refuses an existing target as well.
+   */
+  private async firstFreeName(absolute: string): Promise<string> {
+    if (!(await this.exists(absolute))) return absolute;
+
+    const directory = path.dirname(absolute);
+    const base = path.basename(absolute);
+    const stem = base.replace(/\.md$/i, "");
+    const extension = base.slice(stem.length);
+
+    for (let suffix = 2; suffix < 1000; suffix += 1) {
+      const candidate = path.join(directory, `${stem}-${suffix}${extension}`);
+      if (!(await this.exists(candidate))) return candidate;
+    }
+
+    throw new VaultWriteError(`No free name for ${base}`, 0);
+  }
+
+  /**
+   * Publishes a file that must not exist yet.
+   *
+   * The bytes go to a temporary file first, so a reader never sees a half
+   * written note, and the temporary file is then linked to the target. `link`
+   * fails with `EEXIST` when the target is there, and that failure is the
+   * guarantee: the note of another program is never replaced. The temporary
+   * file is removed afterwards, the link keeps the content alive.
+   */
+  private async publishNew(absolute: string, payload: string): Promise<void> {
+    const directory = path.dirname(absolute);
+    const temp = path.join(
+      directory,
+      `.${path.basename(absolute)}.${randomBytes(6).toString("hex")}.new`,
+    );
+    try {
+      await writeFile(temp, payload, { encoding: "utf8", flag: "wx" });
+      await link(temp, absolute);
+    } finally {
+      await rm(temp, { force: true }).catch(() => undefined);
+    }
   }
 
   /**

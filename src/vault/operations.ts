@@ -426,13 +426,30 @@ export class VaultOperations {
     return readFile(path.join(this.vaultRoot, note.relativePath), "utf8").catch(() => "");
   }
 
-  /** Creates a note from a title, used by the fallback path. */
+  /**
+   * Creates a note from a title, used by the fallback path.
+   *
+   * The note is created, never overwritten: a short message with the same title
+   * as an existing note is a second thought, not a replacement of the first
+   * one. The guard picks the next free name when the title is taken, and the
+   * result carries the path that was really written.
+   */
   async createNoteFromTitle(
     title: string,
     body: string,
     source: VaultEvent["source"] = "fallback",
-  ) {
-    return this.writeNote(noteFileName(title), body, { source });
+  ): Promise<WriteResult> {
+    const targetPath = noteFileName(title);
+    const absolute = await resolveRealInsideVault(this.vaultRoot, targetPath);
+    const titles = await this.cachedTitles();
+    const selfTitle = path.basename(absolute).replace(/\.md$/i, "");
+    const linked = autoLinkEntities(normalizeDashes(body), titles, selfTitle);
+    const withFrontmatter = ensureFrontmatter(linked, this.currentDate());
+
+    const result = await this.deps.guard.create(absolute, withFrontmatter);
+    this.invalidateTitles();
+    await this.record(result, source);
+    return result;
   }
 
   /** Current date in the configured time zone (YYYY-MM-DD). */

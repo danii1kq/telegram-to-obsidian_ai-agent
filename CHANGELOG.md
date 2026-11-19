@@ -5,6 +5,50 @@ the project follows [Semantic Versioning](https://semver.org).
 
 ## [Unreleased]
 
+## [0.3.2] - 2026-11-19
+
+The release of the audit: a message is a row before Telegram hears an answer, a
+new note never replaces an old one, and an undo never throws away the edits of
+the owner.
+
+### Fixed
+
+- The fallback writer could replace a note that appeared between the check and
+  the write. A new note is published with a hard link now, which fails when the
+  name is taken, and the next free suffix is used instead: `Note.md`,
+  `Note-2.md`, `Note-3.md`. The log records the file that was really written.
+- The undo of an overwrite wrote the old text back without looking at the note,
+  so an edit of the owner made after the bot wrote it was lost. The note is
+  compared with the hash of the bot's text, and the guard reads it once more
+  right before the replacement. A changed note, a missing note and an entry
+  without a hash are answered instead of overwritten. An empty text is restored
+  as an empty file.
+- The webhook wrote the update to the database and then handled it in the same
+  call, while the handlers pushed the work into the in-memory queue as well.
+  One update had two paths, and a slow job held the answer of Telegram for its
+  whole length. There is one door now: the webhook answers `200` after the row
+  is written and does not handle anything, polling writes the row before the
+  offset moves, and one runner takes the queued rows in order.
+- The webhook asked Telegram for messages only, so the press of a language
+  button never reached the bot.
+- The summary of a day read the note as it looks when the summary runs, so a
+  note that grew for a month hid the line of that day, and a note extended
+  three times in a day lost two of those blocks. The log keeps the text of every
+  write now, and the summary groups the writes by file with the newest first.
+
+### Changed
+
+- The jobs of an older version are marked as `interrupted` on the first start,
+  once, with their payload kept. That version handled the update in the same
+  call as the answer, so running such a row again would write a note twice and
+  would repeat an `/undo`. Jobs queued by this version continue after a restart.
+- The Mini App port is bound to `127.0.0.1` in Compose. The Cloudflare Tunnel
+  connects to that address, and a port open to the internet is a second way in
+  that nobody watches.
+- `listNotesDetailed`, `revertStrayWrites` and the `runId` parameter are gone.
+  Nothing called them: the listing of the Mini App uses the paged one, and the
+  agent of the summary has no write tools to roll back.
+
 ## [0.3.1] - 2026-11-02
 
 The release of the defects the previous one left behind: a search could stop the

@@ -41,8 +41,10 @@ services:
     ports:
       # The health endpoint is only reachable from the host.
       - "127.0.0.1:${HEALTH_PORT:-8090}:8080"
-      # The Mini App is open from the internet, the API checks every request.
-      - "${MINI_APP_PORT:-8091}:8080"
+      # The Mini App is reachable from the host only as well: the Cloudflare
+      # Tunnel of the server connects to this address, and a port that is open
+      # to the internet is a second way in that nobody watches.
+      - "127.0.0.1:${MINI_APP_PORT:-8091}:8080"
     healthcheck:
       test:
         - CMD

@@ -177,27 +177,6 @@ export class VaultOperations {
     };
   }
 
-  /** The notes with their date, their tags and a short text. */
-  async listNotesDetailed(limit = 60): Promise<DetailedNote[]> {
-    const notes = await this.listNotes();
-
-    // The notes are read side by side: a vault of a few hundred notes is a few
-    // hundred independent reads, and one after another they add up.
-    const detailed = await Promise.all(
-      notes.slice(0, limit).map(async (note) => {
-        const content = await this.readScanned(note);
-        const fields = parseFrontmatter(content);
-        return {
-          ...note,
-          date: fields.date ?? "",
-          tags: parseTags(content),
-          snippet: excerptOf(content),
-        };
-      }),
-    );
-    return detailed;
-  }
-
   /**
    * Searches the vault. `files` matches note names, `content` matches the
    * text inside the notes. Both accept a glob (`*.md`) or a plain substring.
@@ -315,7 +294,7 @@ export class VaultOperations {
   async writeNote(
     targetPath: string,
     content: string,
-    options: { source?: VaultEvent["source"]; autoLink?: boolean; runId?: string } = {},
+    options: { source?: VaultEvent["source"]; autoLink?: boolean } = {},
   ): Promise<WriteResult> {
     const absolute = await resolveRealInsideVault(this.vaultRoot, targetPath);
     const titles = options.autoLink === false ? [] : await this.cachedTitles();
@@ -330,7 +309,6 @@ export class VaultOperations {
     this.invalidateTitles();
     await this.record(result, options.source ?? "agent", {
       previous: result.action === "overwrite" ? previous : undefined,
-      runId: options.runId,
     });
     return result;
   }
@@ -362,14 +340,13 @@ export class VaultOperations {
   async appendNote(
     targetPath: string,
     block: string,
-    options: { source?: VaultEvent["source"]; runId?: string } = {},
+    options: { source?: VaultEvent["source"] } = {},
   ): Promise<WriteResult> {
     const absolute = await resolveRealInsideVault(this.vaultRoot, targetPath);
     const normalized = normalizeDashes(block);
     const result = await this.deps.guard.append(absolute, normalized);
     await this.record(result, options.source ?? "agent", {
       block: normalized,
-      runId: options.runId,
     });
     return result;
   }
@@ -500,7 +477,7 @@ export class VaultOperations {
   private async record(
     result: WriteResult,
     source: VaultEvent["source"],
-    extra: { block?: string; previous?: string; runId?: string } = {},
+    extra: { block?: string; previous?: string } = {},
   ): Promise<void> {
     const event: VaultEvent = {
       action: result.action,
@@ -509,7 +486,6 @@ export class VaultOperations {
       at: new Date().toISOString(),
       bytes: result.bytes,
       source,
-      ...(extra.runId ? { runId: extra.runId } : {}),
       ...(extra.block ? { block: extra.block } : {}),
       ...(extra.previous !== undefined ? { previous: extra.previous } : {}),
     };

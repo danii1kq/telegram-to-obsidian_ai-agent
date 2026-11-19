@@ -5,7 +5,6 @@ import { dailySummaries, notesLog } from "../db/schema.js";
 import type { HermesClient } from "../hermes/client.js";
 import { type Language, messages } from "../i18n/index.js";
 import type { Logger } from "../logger.js";
-import { readEvents } from "../vault/events.js";
 import { normalizeDashes, type VaultOperations } from "../vault/operations.js";
 import { localDate, localDayStartMs, monthFileName, monthTitle, previousDay } from "./time.js";
 
@@ -46,49 +45,6 @@ const MAX_EXCERPTS_PER_NOTE = 6;
  * Hermes uses for the set without the file and the terminal tools.
  */
 const SUMMARY_TOOLSETS = "safe";
-
-/**
- * The writes the agent did while it made the summary, taken back.
- *
- * This is kept for the callers that know the exact run: an event is only
- * taken back when its `runId` is the one of the run that is being undone. An
- * event without a run id is never touched, because there is no way to tell
- * whose it is.
- *
- * The summary itself does not use it any more. The agent of the summary has no
- * write tools, so there is nothing to take back, and a revert that guesses by
- * time deletes the notes of other jobs: a note written a second before the
- * summary starts is inside any window that is wide enough to catch a stray
- * write of the summary.
- */
-export async function revertStrayWrites(
-  vault: VaultOperations,
-  eventsFile: string,
-  runId: string,
-): Promise<number> {
-  if (!runId) return 0;
-  const events = await readEvents(eventsFile);
-  const stray = events.filter((event) => event.runId === runId);
-  let reverted = 0;
-
-  for (const event of [...stray].reverse()) {
-    try {
-      if (event.action === "append" && event.block) {
-        await vault.removeBlock(event.path, event.block);
-        reverted += 1;
-      } else if (event.action === "overwrite" && event.previous !== undefined) {
-        await vault.writeNote(event.path, event.previous, { source: "agent", autoLink: false });
-        reverted += 1;
-      } else if (event.action === "create") {
-        await vault.deleteNote(event.path);
-        reverted += 1;
-      }
-    } catch {
-      // The file is gone or locked, the next write will not find it anyway.
-    }
-  }
-  return reverted;
-}
 
 /**
  * Makes the summary of a day and writes it into the file of the month.

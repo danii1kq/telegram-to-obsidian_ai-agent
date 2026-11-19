@@ -6,7 +6,6 @@ import {
   buildSummaryPrompt,
   cleanSummary,
   collectNotesOfDay,
-  revertStrayWrites,
   runDailySummary,
   summaryNotice,
   writeSection,
@@ -160,54 +159,6 @@ describe("summaryNotice", () => {
   it("carries the address of the mini app", () => {
     const notice = summaryNotice("2026-10-21", "https://notes.example.com");
     expect(notice.miniAppUrl).toBe("https://notes.example.com");
-  });
-});
-
-describe("revertStrayWrites", () => {
-  it("takes back only the writes of the run it is given", async () => {
-    const { root, vaultPath, vault } = await makeWorld();
-    const eventsFile = path.join(root, "events.json");
-
-    await vault.writeNote("Идеи.md", "мысль");
-    // The agent writes a note while it should only answer with a text. The
-    // write carries the run id, so it can be told apart from the others.
-    await vault.writeNote("Дневник.md", "вывод агента", { runId: "run-1" });
-
-    const reverted = await revertStrayWrites(vault, eventsFile, "run-1");
-    expect(reverted).toBe(1);
-
-    await expect(readFile(path.join(vaultPath, "Дневник.md"), "utf8")).rejects.toThrow();
-    const kept = await readFile(path.join(vaultPath, "Идеи.md"), "utf8");
-    expect(kept).toContain("мысль");
-  });
-
-  it("never takes back a write of another run, however close in time", async () => {
-    const { root, vaultPath, vault } = await makeWorld();
-    const eventsFile = path.join(root, "events.json");
-
-    // Two jobs, one right after the other: the second one is a legitimate
-    // note of the owner, and it is a millisecond away from the first.
-    await vault.writeNote("Первый.md", "первая заметка", { runId: "run-1" });
-    await vault.writeNote("Второй.md", "вторая заметка", { runId: "run-2" });
-
-    const reverted = await revertStrayWrites(vault, eventsFile, "run-1");
-    expect(reverted).toBe(1);
-
-    await expect(readFile(path.join(vaultPath, "Первый.md"), "utf8")).rejects.toThrow();
-    const kept = await readFile(path.join(vaultPath, "Второй.md"), "utf8");
-    expect(kept).toContain("вторая заметка");
-  });
-
-  it("does nothing when it is given no run id", async () => {
-    const { root, vaultPath, vault } = await makeWorld();
-    const eventsFile = path.join(root, "events.json");
-
-    await vault.writeNote("Заметка.md", "текст", { runId: "run-1" });
-
-    const reverted = await revertStrayWrites(vault, eventsFile, "");
-    expect(reverted).toBe(0);
-    const kept = await readFile(path.join(vaultPath, "Заметка.md"), "utf8");
-    expect(kept).toContain("текст");
   });
 });
 

@@ -1,4 +1,4 @@
-import { randomBytes } from "node:crypto";
+import { createHash, randomBytes } from "node:crypto";
 import { constants } from "node:fs";
 import { access, link, mkdir, readdir, readFile, rename, rm, stat, writeFile } from "node:fs/promises";
 import path from "node:path";
@@ -95,6 +95,17 @@ function isTransient(error: unknown): boolean {
 
 function errorCode(error: unknown): string | undefined {
   return (error as NodeJS.ErrnoException | undefined)?.code;
+}
+
+/**
+ * The hash of the text of a note.
+ *
+ * It is the same function the log of the undo uses, kept here so the guard does
+ * not import from the bot: the guard is the layer that knows about files, and
+ * the bot is the layer that knows about Telegram.
+ */
+function hashOfText(content: string): string {
+  return createHash("sha256").update(content, "utf8").digest("hex");
 }
 
 /**
@@ -203,6 +214,31 @@ export class VaultGuard {
       }`,
       this.maxAttempts,
     );
+  }
+
+  /**
+   * Replaces a note, but only when its text is still the expected one.
+   *
+   * The undo of an overwrite checks the hash before it calls this, and the
+   * check would be worth nothing if the write did not repeat it: the note may
+   * be changed between the two. The text is read here, right before the
+   * publication, and a difference means the note is not the one that was
+   * checked, so nothing is written and the caller is told.
+   *
+   * The answer is `null` when the note changed or disappeared. An empty text is
+   * a real value: it is written as an empty file, not skipped.
+   */
+  async replaceIfUnchanged(
+    absolute: string,
+    content: string,
+    expectedHash: string,
+  ): Promise<WriteResult | null> {
+    const current = await this.readIfExists(absolute);
+    if (current === null) return null;
+    if (hashOfText(current) !== expectedHash) return null;
+
+    const payload = content.endsWith("\n") || content === "" ? content : `${content}\n`;
+    return this.runWithRetry(absolute, payload, "overwrite");
   }
 
   /**

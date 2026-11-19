@@ -38,6 +38,10 @@ export type Messages = {
   undoNotFound: (title: string) => string;
   undoConfirm: (title: string) => string;
   undoNothingToConfirm: string;
+  /** The note changed after the bot wrote it, so the old text is not restored. */
+  undoOverwriteChanged: (title: string) => string;
+  /** The note was written before the hash existed, so the restore is unsafe. */
+  undoOverwriteUnknown: (title: string) => string;
   noteCreated: (title: string) => string;
   noteAppended: (title: string) => string;
   noteUpdated: (title: string) => string;
@@ -110,6 +114,10 @@ const en: Messages = {
   undoConfirm: (title) =>
     `The note "${title}" was changed after I wrote it. Delete it anyway? Answer /undo confirm.`,
   undoNothingToConfirm: "There is nothing to confirm.",
+  undoOverwriteChanged: (title) =>
+    `The note "${title}" was changed after I wrote it, so I did not put the old text back. Your edits are more important than my undo.`,
+  undoOverwriteUnknown: (title) =>
+    `I have no record of the text I wrote into "${title}", so I cannot prove the note is unchanged. I left it as it is.`,
   noteCreated: (title) => `Created the note "${title}"`,
   noteAppended: (title) => `Added an entry to "${title}"`,
   noteUpdated: (title) => `Updated the note "${title}"`,
@@ -177,6 +185,10 @@ const ru: Messages = {
   undoConfirm: (title) =>
     `Заметку «${title}» меняли после того, как я её создал. Удалить всё равно? Ответь /undo confirm.`,
   undoNothingToConfirm: "Нечего подтверждать.",
+  undoOverwriteChanged: (title) =>
+    `Заметку «${title}» меняли после того, как я её записал, поэтому старый текст я не вернул. Твои правки важнее моей отмены.`,
+  undoOverwriteUnknown: (title) =>
+    `У меня нет записи о том, какой текст я записал в «${title}», поэтому я не могу доказать, что заметка не изменилась. Оставил как есть.`,
   noteCreated: (title) => `Создал заметку «${title}»`,
   noteAppended: (title) => `Добавил запись в «${title}»`,
   noteUpdated: (title) => `Обновил заметку «${title}»`,

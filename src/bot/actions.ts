@@ -110,8 +110,30 @@ export async function undoLast(
   }
 
   if (entry.action === "overwrite") {
-    if (!entry.previous) return messages(language).undoNothing;
-    await deps.vault.writeNote(entry.path, entry.previous, { source: "agent", autoLink: false });
+    if (entry.previous === null) return messages(language).undoNothing;
+
+    // The note has to be the one the bot wrote, otherwise the restore would
+    // throw away the edits of the owner. The hash is taken when the bot writes
+    // the note, so any change of the text is a difference. A note without a
+    // hash was written before the field existed, and a restore that cannot be
+    // proven safe is a restore that needs a fresh look.
+    if (!entry.contentHash) return messages(language).undoOverwriteUnknown(entry.title);
+
+    const current = await deps.vault.readFile(entry.path).catch(() => null);
+    if (!current) return messages(language).undoNotFound(entry.title);
+    if (hashOf(current.content) !== entry.contentHash) {
+      return messages(language).undoOverwriteChanged(entry.title);
+    }
+
+    // The check above and the write below are not one step: the note may be
+    // changed in between. The write is therefore done by the guard, which reads
+    // the file again right before it replaces it and refuses the write when the
+    // text is no longer the one that was checked.
+    const restored = await deps.vault
+      .restoreNote(entry.path, entry.previous, entry.contentHash)
+      .catch(() => null);
+    if (!restored) return messages(language).undoOverwriteChanged(entry.title);
+
     await markUndone(deps, entry.id);
     return messages(language).undoRestored(entry.title);
   }

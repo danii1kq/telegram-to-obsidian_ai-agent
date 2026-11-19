@@ -335,6 +335,29 @@ export class VaultOperations {
     return result;
   }
 
+  /**
+   * Puts the old text back into a note, but only when the note is still the
+   * one the bot wrote.
+   *
+   * The hash of the text that was checked is passed in, and the guard reads the
+   * file again right before it replaces it: a change that arrived between the
+   * check in the caller and the write here is refused instead of overwritten.
+   * The text is written exactly as it was, including an empty one, because an
+   * empty note is a real state of a note and not a missing value.
+   */
+  async restoreNote(
+    targetPath: string,
+    previous: string,
+    expectedHash: string,
+  ): Promise<WriteResult | null> {
+    const absolute = await resolveRealInsideVault(this.vaultRoot, targetPath);
+    const result = await this.deps.guard.replaceIfUnchanged(absolute, previous, expectedHash);
+    if (!result) return null;
+    this.invalidateTitles();
+    await this.record(result, "agent", { previous });
+    return result;
+  }
+
   /** Appends a block to an existing note, keeping the rest of the content. */
   async appendNote(
     targetPath: string,

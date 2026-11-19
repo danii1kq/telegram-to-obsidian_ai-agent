@@ -145,4 +145,98 @@ describe("undoLast", () => {
     expect(result).toContain("Отменять нечего");
     client.close();
   });
+
+  it("restores the old text of an overwritten note", async () => {
+    const { root, vault, db, client } = await makeWorld();
+    await vault.writeNote("Ideas.md", "the old text");
+    const written = await readFile(path.join(root, "vault", "Ideas.md"), "utf8");
+
+    await db.insert(undoLog).values({
+      createdAt: new Date().toISOString(),
+      action: "overwrite",
+      path: "Ideas.md",
+      title: "Ideas",
+      previous: "the old text\n",
+      contentHash: hashOf(written),
+      telegramUserId: "1",
+    });
+
+    const result = await undoLast({ vault, db, logger }, 1, "ru");
+    expect(result).toContain("вернул прежнее содержимое");
+
+    const after = await readFile(path.join(root, "vault", "Ideas.md"), "utf8");
+    expect(after).toBe("the old text\n");
+    client.close();
+  });
+
+  it("keeps the edits of the owner when the note changed after the write", async () => {
+    const { root, vault, db, client } = await makeWorld();
+    await vault.writeNote("Ideas.md", "the text of the bot");
+    const written = await readFile(path.join(root, "vault", "Ideas.md"), "utf8");
+
+    // The owner edits the note after the bot wrote it.
+    await writeFile(path.join(root, "vault", "Ideas.md"), "the text of the owner\n", "utf8");
+
+    await db.insert(undoLog).values({
+      createdAt: new Date().toISOString(),
+      action: "overwrite",
+      path: "Ideas.md",
+      title: "Ideas",
+      previous: "the old text\n",
+      contentHash: hashOf(written),
+      telegramUserId: "1",
+    });
+
+    const result = await undoLast({ vault, db, logger }, 1, "ru");
+    expect(result).toContain("меняли после того, как я её записал");
+
+    const after = await readFile(path.join(root, "vault", "Ideas.md"), "utf8");
+    expect(after).toBe("the text of the owner\n");
+    client.close();
+  });
+
+  it("restores an empty note as an empty note", async () => {
+    const { root, vault, db, client } = await makeWorld();
+    await vault.writeNote("Ideas.md", "something");
+    const written = await readFile(path.join(root, "vault", "Ideas.md"), "utf8");
+
+    await db.insert(undoLog).values({
+      createdAt: new Date().toISOString(),
+      action: "overwrite",
+      path: "Ideas.md",
+      title: "Ideas",
+      previous: "",
+      contentHash: hashOf(written),
+      telegramUserId: "1",
+    });
+
+    const result = await undoLast({ vault, db, logger }, 1, "ru");
+    expect(result).toContain("вернул прежнее содержимое");
+
+    const after = await readFile(path.join(root, "vault", "Ideas.md"), "utf8");
+    expect(after).toBe("");
+    client.close();
+  });
+
+  it("refuses to restore when the note has no recorded hash", async () => {
+    const { root, vault, db, client } = await makeWorld();
+    await vault.writeNote("Ideas.md", "the text of the bot");
+
+    await db.insert(undoLog).values({
+      createdAt: new Date().toISOString(),
+      action: "overwrite",
+      path: "Ideas.md",
+      title: "Ideas",
+      previous: "the old text\n",
+      contentHash: null,
+      telegramUserId: "1",
+    });
+
+    const result = await undoLast({ vault, db, logger }, 1, "ru");
+    expect(result).toContain("нет записи о том, какой текст");
+
+    const after = await readFile(path.join(root, "vault", "Ideas.md"), "utf8");
+    expect(after).toContain("the text of the bot");
+    client.close();
+  });
 });

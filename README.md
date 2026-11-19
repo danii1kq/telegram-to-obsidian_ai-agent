@@ -156,6 +156,41 @@ day.
 If the bot was down at midnight, the missed summaries are made after the next
 start.
 
+## A message is not lost
+
+A message of the owner is a row in the database before Telegram is told that it
+arrived. Both ways of receiving updates end in the same place:
+
+- **The webhook** answers `200` only after the row is written. The answer means
+  "accepted", not "done": the work happens afterwards, so a job of a minute
+  does not hold the answer of Telegram.
+- **Polling** writes the row in the first middleware of the chain, before the
+  offset moves. A process that dies in between asks Telegram for the same update
+  again, because Telegram still considers it undelivered.
+
+One runner takes the queued rows in order, runs them and writes the outcome
+back. A job that fails goes back to the queue while it has attempts left. The
+update id is unique, so a repeated update of Telegram is not a second job.
+
+The first start after an upgrade marks the rows of an older version as
+`interrupted` and keeps their payload: that version handled the update in the
+same call as the answer, so running such a row again would write a note twice
+and would repeat an `/undo`. Rows queued by this version continue after a
+restart.
+
+## Undo
+
+`/undo` takes back the last write: it removes an appended block, restores the
+text of an overwritten note or deletes a note the bot created.
+
+The undo of an overwrite compares the note with the hash of the text the bot
+wrote. A note that was edited after that, a note that is gone and an entry
+without a hash are answered in the language of the owner and nothing is
+written: the edits of the owner are more important than the undo. When the text
+matches, the guard reads the file once more right before it replaces it, so a
+change that arrives in between is refused instead of overwritten. An empty text
+is restored as an empty file.
+
 ## The safety of the notes during the sync
 
 Syncthing can update the files at the same time as the agent. To lower the risk
@@ -166,6 +201,11 @@ protection:
   is then renamed over the target. This avoids reading a half written note. It
   does not stop another program from writing the same file in the same instant,
   and it is not described as if it did.
+- **A new note is never a replacement.** The fallback writer publishes with a
+  hard link, which fails when the name is taken, so a note that appears in the
+  window between the check and the write is kept. The next free suffix is used
+  instead: `Note.md`, `Note-2.md`, `Note-3.md`, and the log records the file
+  that was really written.
 - **Waiting after a change.** If `fs.watch` sees a recent change of the file,
   the write is put off for a second.
 - **Retries.** If the file is locked, the bot repeats the write every 500 ms.
